@@ -74,7 +74,10 @@ class IndexReader {
 
  private:
   const unsigned char* data;
-  ssize_t length;
+  off_t length;
+#ifdef _WIN32
+  void* mapping_handle;
+#endif
   int64_t total;
   void fail(off_t n, const char* message) const;
 };

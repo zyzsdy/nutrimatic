@@ -1,7 +1,6 @@
 #include "index.h"
 
 #include <assert.h>
-#include <sys/mman.h>
 
 #include <algorithm>
 

@@ -2,7 +2,12 @@
 
 #include <assert.h>
 #include <limits.h>
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 
 #include <algorithm>
 
@@ -10,14 +15,46 @@ using namespace std;
 
 IndexReader::IndexReader(FILE* fp) {
   // open the file
-  fseek(fp, 0, SEEK_END);
-  length = ftell(fp);
+  if (fseeko(fp, 0, SEEK_END) != 0) {
+    fprintf(stderr, "error: can't seek data file\n");
+    exit(1);
+  }
+  length = ftello(fp);
+  if (length < 0) {
+    fprintf(stderr, "error: can't tell data file length\n");
+    exit(1);
+  }
+
+#ifdef _WIN32
+  HANDLE file = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(fp)));
+  if (file == INVALID_HANDLE_VALUE) {
+    fprintf(stderr, "error: can't get file handle for data file\n");
+    exit(1);
+  }
+  HANDLE mapping = CreateFileMapping(file, NULL, PAGE_READONLY, 0, 0, NULL);
+  if (mapping == NULL) {
+    fprintf(stderr, "error: can't create mapping for data file (length %lld)\n",
+            static_cast<long long>(length));
+    exit(1);
+  }
+  void* map = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+  mapping_handle = mapping;
+  data = static_cast<const unsigned char*>(map);
+  if (map == NULL) {
+    CloseHandle(mapping);
+    fprintf(stderr, "error: can't mmap data file (length %lld)\n",
+            static_cast<long long>(length));
+    exit(1);
+  }
+#else
   void* map = mmap(NULL, length, PROT_READ, MAP_SHARED, fileno(fp), 0);
   data = (const unsigned char*) map;
   if (map == MAP_FAILED) {
-    fprintf(stderr, "error: can't mmap data file (length %zu)\n", length);
+    fprintf(stderr, "error: can't mmap data file (length %lld)\n",
+            static_cast<long long>(length));
     exit(1);
   }
+#endif
 
   // scan the top level nodes to compute the total
   std::vector<Choice> top;
@@ -33,7 +70,12 @@ IndexReader::IndexReader(FILE* fp) {
 }
 
 IndexReader::~IndexReader() {
+#ifdef _WIN32
+  UnmapViewOfFile(data);
+  CloseHandle(reinterpret_cast<HANDLE>(mapping_handle));
+#else
   munmap((void*) data, length);
+#endif
 }
 
 int IndexReader::children(off_t n, int64_t count,

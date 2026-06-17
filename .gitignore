@@ -9,3 +9,8 @@ __pycache__
 *.index
 *.xml
 *.xml.bz2
+.codex-tmp/
+.pytest_cache/
+build_index/
+data/
+deps/

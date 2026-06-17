@@ -20,6 +20,7 @@ else
   ]
 endif
 project_args = [
+  '-D_USE_MATH_DEFINES',
   '-Wno-ignored-qualifiers',
   '-Wno-sign-compare',
   '-Wno-overloaded-virtual',
@@ -36,18 +37,18 @@ fst_dep = dependency('openfst')
 tre_dep = dependency('tre')
 xml2_dep = dependency('libxml-2.0')
 
-index_lib = library(
+index_lib = static_library(
   'index',
   ['index-reader.cpp', 'index-walker.cpp', 'index-writer.cpp'],
 )
 
-search_lib = library(
+search_lib = static_library(
   'search',
   ['search-driver.cpp', 'search-printer.cpp'],
   link_with: [index_lib],
 )
 
-expr_lib = library(
+expr_lib = static_library(
   'expr', [
     'expr-anagram.cpp',
     'expr-filter.cpp',

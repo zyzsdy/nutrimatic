@@ -1,4 +1,6 @@
 #include <deque>
+#include <cstddef>
+#include <limits>
 #include <queue>
 #include <set>
 #include <string>
@@ -49,4 +51,6 @@ class SearchDriver {
   const double restart;
 };
 
-void PrintAll(SearchDriver*);
+void PrintAll(
+    SearchDriver*,
+    size_t max_steps = std::numeric_limits<size_t>::max());

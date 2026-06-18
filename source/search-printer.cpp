@@ -4,11 +4,11 @@
 #include <stdio.h>
 #include <string.h>
 
-void PrintAll(SearchDriver* d) {
-  int count = 0;
-  for (;;) {
-    if (!(++count % 100000)) {
-      printf("# %d\n", count);
+void PrintAll(SearchDriver* d, size_t max_steps) {
+  for (size_t count = 0; count < max_steps; ++count) {
+    const size_t step_number = count + 1;
+    if (!(step_number % 100000)) {
+      printf("# %zu\n", step_number);
       fflush(stdout);
     }
     if (d->step()) {

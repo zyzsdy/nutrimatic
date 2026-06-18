@@ -76,6 +76,8 @@ foreach p : ['find-expr', 'test-expr']
   executable(p, p + '.cpp', link_with: expr_lib, dependencies: fst_dep, install: true)
 endforeach
 
+executable('test-find-expr', 'test-find-expr.cpp', link_with: index_lib)
+
 executable(
   'test-rank-lines',
   ['test-rank-lines.cpp', 'rank-lines-lib.cpp'],

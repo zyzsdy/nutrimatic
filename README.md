@@ -122,11 +122,25 @@ record is tab-separated and contains the score, the original one-based line
 number, and the normalized text with spaces inserted.  Existing spaces remain
 required word breaks.
 
-Use `--no-sort` to emit and flush each result as soon as it is scored.  This
-preserves input order and is useful for streaming consumers:
+`rank-lines` scores lines concurrently, using the number of logical CPU cores
+reported by the system.  Use `--threads N` to choose a different worker count.
+
+Each line is limited to 100,000 search steps by default.  A line that exhausts
+this budget is emitted with score `-1` and its normalized, unsegmented text.
+Use `--max-steps N` to adjust the limit.
+
+Use `--no-sort` to emit and flush each result as soon as it is scored.  Results
+then appear in completion order, not input order; the original line number can
+be used by streaming consumers to identify or reorder them:
 
 ```
 build/rank-lines --no-sort wiki-merged.index input.txt
+```
+
+Options may be combined, for example:
+
+```
+build/rank-lines --no-sort --threads 8 --max-steps 200000 wiki-merged.index input.txt
 ```
 
 ### Serving the web interface

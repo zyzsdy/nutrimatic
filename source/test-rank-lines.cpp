@@ -4,9 +4,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <sstream>
 #include <fstream>
+#include <thread>
 #include <vector>
 
 static void ExpectTrue(const char* name, bool value);
@@ -103,6 +108,15 @@ int main() {
     ExpectTrue("best segmentation score", joined.score > 0.0);
     ExpectTrue("line number", joined.line_number == 7);
 
+    LineRankResult exhausted = RankLine(reader, "catdog", 11, 1);
+    ExpectEqual("exhausted search keeps normalized text",
+                exhausted.text, "catdog");
+    ExpectTrue("exhausted search score", exhausted.score == -1.0);
+
+    LineRankResult budgeted = RankLine(reader, "catdog", 12, 1000);
+    ExpectEqual("sufficient search budget", budgeted.text, "cat dog");
+    ExpectTrue("sufficient search budget score", budgeted.score > 0.0);
+
     LineRankResult fixed = RankLine(reader, "cat dog", 8);
     ExpectEqual("fixed existing space", fixed.text, "cat dog");
 
@@ -141,11 +155,50 @@ int main() {
                ProcessLines(reader, streaming_input, false, streaming_output));
     std::vector<OutputRow> streaming_rows = ParseRows(streaming_buffer.str());
     ExpectTrue("streaming row count", streaming_rows.size() == 4);
+    std::sort(streaming_rows.begin(), streaming_rows.end(),
+              [](const OutputRow& left, const OutputRow& right) {
+                return left.line_number < right.line_number;
+              });
     ExpectEqual("streaming first text", streaming_rows[0].text, "catfish");
     ExpectEqual("streaming second text", streaming_rows[1].text, "cat dog");
     ExpectEqual("streaming third text", streaming_rows[2].text, "missing");
     ExpectEqual("streaming fourth text", streaming_rows[3].text, "cat");
     ExpectTrue("streaming flushes each line", streaming_buffer.sync_count == 4);
+
+    std::mutex completion_mutex;
+    std::condition_variable completion_cv;
+    bool fast_finished = false;
+    auto controlled_ranker = [&](const std::string& text, size_t line_number) {
+      if (text == "slow") {
+        std::unique_lock<std::mutex> lock(completion_mutex);
+        completion_cv.wait_for(lock, std::chrono::milliseconds(500),
+                               [&] { return fast_finished; });
+        lock.unlock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      } else {
+        {
+          std::lock_guard<std::mutex> lock(completion_mutex);
+          fast_finished = true;
+        }
+        completion_cv.notify_all();
+      }
+      return LineRankResult{1.0, line_number, text};
+    };
+    std::istringstream completion_input("slow\nfast\n");
+    CountingBuffer completion_buffer;
+    std::ostream completion_output(&completion_buffer);
+    ExpectTrue("process completion ordered lines",
+               ProcessLinesWithRanker(completion_input, false, 2,
+                                      completion_output, controlled_ranker));
+    std::vector<OutputRow> completion_rows =
+        ParseRows(completion_buffer.str());
+    ExpectTrue("completion row count", completion_rows.size() == 2);
+    ExpectEqual("completed line is emitted first",
+                completion_rows[0].text, "fast");
+    ExpectEqual("slow line is emitted second",
+                completion_rows[1].text, "slow");
+    ExpectTrue("completion output flushes each line",
+               completion_buffer.sync_count == 2);
 
     std::istringstream failing_output_input("cat\n");
     FailingSyncBuffer failing_buffer;
@@ -192,8 +245,45 @@ int main() {
                             no_sort_output, no_sort_error) == 0);
     std::vector<OutputRow> no_sort_rows = ParseRows(no_sort_output.str());
     ExpectTrue("no-sort row count", no_sort_rows.size() == 2);
+    std::sort(no_sort_rows.begin(), no_sort_rows.end(),
+              [](const OutputRow& left, const OutputRow& right) {
+                return left.line_number < right.line_number;
+              });
     ExpectEqual("no-sort first text", no_sort_rows[0].text, "catfish");
     ExpectEqual("no-sort second text", no_sort_rows[1].text, "cat dog");
+
+    const char* limited_argv[] = {
+        "rank-lines", "--threads", "2", "--max-steps", "1",
+        "test-rank-lines.index"};
+    std::istringstream limited_input("catdog\n");
+    std::ostringstream limited_output;
+    std::ostringstream limited_error;
+    ExpectTrue("limited exit status",
+               RunRankLines(6, limited_argv, limited_input,
+                            limited_output, limited_error) == 0);
+    std::vector<OutputRow> limited_rows = ParseRows(limited_output.str());
+    ExpectTrue("limited row count", limited_rows.size() == 1);
+    ExpectTrue("limited score", limited_rows[0].score == -1.0);
+    ExpectEqual("limited text", limited_rows[0].text, "catdog");
+    ExpectEqual("limited error", limited_error.str(), "");
+
+    const char* zero_steps_argv[] = {
+        "rank-lines", "--max-steps", "0", "test-rank-lines.index"};
+    std::ostringstream zero_steps_error;
+    ExpectTrue("zero max steps exit status",
+               RunRankLines(4, zero_steps_argv, unused_input,
+                            file_output, zero_steps_error) == 2);
+    ExpectTrue("zero max steps diagnostic",
+               zero_steps_error.str().find("max-steps") != std::string::npos);
+
+    const char* bad_threads_argv[] = {
+        "rank-lines", "--threads", "many", "test-rank-lines.index"};
+    std::ostringstream bad_threads_error;
+    ExpectTrue("bad threads exit status",
+               RunRankLines(4, bad_threads_argv, unused_input,
+                            file_output, bad_threads_error) == 2);
+    ExpectTrue("bad threads diagnostic",
+               bad_threads_error.str().find("threads") != std::string::npos);
 
     const char* bad_argv[] = {"rank-lines"};
     std::ostringstream bad_error;

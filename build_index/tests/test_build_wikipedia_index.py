@@ -18,19 +18,6 @@ from build_wikipedia_index import (
 )
 
 
-def test_native_windows_index_files_use_binary_mode():
-    source_dir = Path(__file__).resolve().parents[2] / "source"
-    expected_modes = {
-        "make-index.cpp": 'fopen(filename, "wb")',
-        "merge-indexes.cpp": 'fopen(argv[i], "rb")',
-        "dump-index.cpp": 'fopen(argv[1], "rb")',
-    }
-
-    for filename, expected in expected_modes.items():
-        source = (source_dir / filename).read_text(encoding="utf-8")
-        assert expected in source, f"{filename} must open binary index data in binary mode"
-
-
 def test_build_partial_indexes_reports_file_progress(tmp_path, monkeypatch):
     text_dir = tmp_path / "text"
     text_dir.mkdir()

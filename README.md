@@ -108,6 +108,27 @@ To actually use Nutrimatic, you will need to build an index from Wikipedia.
      build/find-expr wiki-merged.index '<aciimnrttu>'
      ```
 
+### Ranking and segmenting lines
+
+`rank-lines` scores every line in a file with an existing index, inserts likely
+word breaks, and sorts the results from highest to lowest score:
+
+```
+build/rank-lines wiki-merged.index input.txt > ranked.tsv
+```
+
+Omit the input filename, or use `-`, to read from standard input.  Each output
+record is tab-separated and contains the score, the original one-based line
+number, and the normalized text with spaces inserted.  Existing spaces remain
+required word breaks.
+
+Use `--no-sort` to emit and flush each result as soon as it is scored.  This
+preserves input order and is useful for streaming consumers:
+
+```
+build/rank-lines --no-sort wiki-merged.index input.txt
+```
+
 ### Serving the web interface
 
 If you want to run the [nutrimatic.org](https://nutrimatic.org/) style

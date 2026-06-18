@@ -4,6 +4,9 @@
 # Python
 *.pyc
 __pycache__
+.uv-cache/
+.venv
+/build_index/smoke_data/
 
 # Nutrimatic data
 *.index
@@ -11,6 +14,5 @@ __pycache__
 *.xml.bz2
 .codex-tmp/
 .pytest_cache/
-build_index/
 data/
 deps/

@@ -1,0 +1,25 @@
+[project]
+name = "build-index"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "tqdm>=4.68.3",
+    "wikiextractor",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.uv.workspace]
+members = [
+    "wikiextractor",
+]
+
+[tool.uv.sources]
+wikiextractor = { workspace = true }

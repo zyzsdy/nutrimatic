@@ -46,7 +46,7 @@ static void write_index(char const* prefix, int num,
   size_t buf_len = strlen(prefix) + 32;
   char filename[buf_len];
   snprintf(filename, buf_len, "%s.%05d.index", prefix, num);
-  FILE *fp = fopen(filename, "w");
+  FILE *fp = fopen(filename, "wb");
   if (fp == NULL) {
     fprintf(stderr, "error: can't open \"%s\"\n", filename);
     exit(1);

@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
 
   priority_queue<IndexWalker*, std::vector<IndexWalker*>, ReaderCompare> queue;
   for (int i = 2; i < argc - 1; ++i) {
-    FILE *fp = fopen(argv[i], "r");
+    FILE *fp = fopen(argv[i], "rb");
     if (fp == NULL) {
       fprintf(stderr, "error: can't read \"%s\"\n", argv[i]);
       return 1;

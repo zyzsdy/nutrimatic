@@ -12,7 +12,7 @@ int main(int argc, char *argv[]) {
     return 2;
   }
 
-  FILE *fp = fopen(argv[1], "r");
+  FILE *fp = fopen(argv[1], "rb");
   if (fp == NULL) {
     fprintf(stderr, "error: can't open \"%s\"\n", argv[1]);
     return 1;

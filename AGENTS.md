@@ -60,6 +60,8 @@ conan install . --build=missing --settings=build_type=Release
 conan build .
 ```
 
+> 请不要主动执行 `conan build .` 这会花很长时间，将导致bash工具调用超时。在必要的时候通知用户，要求用户手动执行它。
+
 可执行文件会写入 `build/`。`conan build` 会在必要时配置 Meson 并调用
 Ninja。修改工具链、Conan 配置、Meson 选项或依赖后，应重新执行以上两条
 命令，不要复用过期的构建元数据。

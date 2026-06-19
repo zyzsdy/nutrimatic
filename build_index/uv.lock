@@ -13,6 +13,7 @@ name = "build-index"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "opencc" },
     { name = "tqdm" },
     { name = "wikiextractor" },
 ]
@@ -24,6 +25,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "opencc", specifier = ">=1.3.1" },
     { name = "tqdm", specifier = ">=4.68.3" },
     { name = "wikiextractor", editable = "wikiextractor" },
 ]
@@ -59,6 +61,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
+]
+
+[[package]]
+name = "opencc"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/2c/f967c613659fbe885f31b95d67aca3c68dd3e79204586e6aee1fa8240806/opencc-1.3.1.tar.gz", hash = "sha256:6892ee3f8fcc5992f0e9f90dbf177c8da566620f83c3f2040257293f16141b33", size = 11755312, upload-time = "2026-05-09T21:33:16.701Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/0f/dc26fee231b399094a0a2fa876384fab7da041392831250fdaf85fc01cc4/opencc-1.3.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:e5dd5b504163eebba6aae3a3c39a643b11b7ec2a3447c28d9287793806d2911e", size = 1637260, upload-time = "2026-05-09T21:36:04.841Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/90/81d6d85007b4389d80cb931a77f14f36968f4f8e7747ec2fdae7bccec279/opencc-1.3.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:5dafcae42a53b731a829afd92a0f87e07947234eab409ec8337caea8d7fbb686", size = 1556252, upload-time = "2026-05-09T21:31:29.044Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/94/e2d6ca41e55a52b4e8f1f0cbf829bd4e05a22afdbcaa5a4e2f2d47f65342/opencc-1.3.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0239b00a451d5047bee626a5fefecc3b1a58af819244bf6350de74cdd7d2a303", size = 1824997, upload-time = "2026-05-09T21:33:15.384Z" },
+    { url = "https://files.pythonhosted.org/packages/57/43/11138faffa4f6001c7837f509ec7cbd3b751c65de9b30518708ef0783de1/opencc-1.3.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:6cf414badb03e7f8a913d332a2c6884bd87bbbd18482da9820cdbd7dacfc14e1", size = 1853366, upload-time = "2026-05-09T21:33:06.718Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/a2/08b961612812983b6bbeae9de523e4326f09086dc48bc084858f70c643b1/opencc-1.3.1-cp310-cp310-win_amd64.whl", hash = "sha256:268055c0545d419f5ee071c40cef72773fd87fd2db3f3b147112794ed73e5168", size = 2066082, upload-time = "2026-05-09T21:37:17.734Z" },
 ]
 
 [[package]]

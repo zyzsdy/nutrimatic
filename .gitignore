@@ -16,4 +16,8 @@ __pycache__
 .codex-tmp/
 .pytest_cache/
 data/
+zhdata/
+zhclassicdata/
 deps/
+
+docs

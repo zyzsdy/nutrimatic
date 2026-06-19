@@ -1,6 +1,8 @@
 #include "index.h"
+#include "index-builder.h"
 #include "search.h"
 #include "expr.h"
+#include "unicode.h"
 
 #include "fst/concat.h"
 
@@ -13,6 +15,11 @@
 
 using namespace fst;
 
+static void Fail(const char* message) {
+  fprintf(stderr, "FAIL: %s\n", message);
+  exit(1);
+}
+
 static void TestIndex(const char *expr, const char *yes, const char *no) {
   // Write index
 
@@ -22,13 +29,23 @@ static void TestIndex(const char *expr, const char *yes, const char *no) {
     exit(1);
   }
 
-  IndexWriter writer(fp);
-  std::vector<std::string> str;
-  if (yes != NULL) str.push_back(yes);
-  if (no != NULL) str.push_back(no);
-  std::sort(str.begin(), str.end());
-  for (size_t i = 0; i < str.size(); ++i) writer.next(str[i].c_str(), 0, 1);
-  writer.next(NULL, 0, 0);
+  IndexMetadata metadata;
+  metadata.unicode_version = UnicodeVersionArray();
+  IndexWriter writer(fp, metadata);
+  std::vector<SymbolString> chains;
+  if (yes != NULL) chains.push_back(DecodeUtf8Strict(yes));
+  if (no != NULL) chains.push_back(DecodeUtf8Strict(no));
+  for (SymbolString& chain : chains) chain.push_back(kEnd);
+  std::sort(chains.begin(), chains.end());
+  SymbolString previous;
+  for (const SymbolString& chain : chains) {
+    size_t same = 0;
+    while (same < previous.size() && same < chain.size() &&
+           previous[same] == chain[same]) ++same;
+    writer.Next(&chain, same, 1);
+    previous = chain;
+  }
+  writer.Finish();
   fclose(fp);
 
   // Parse expression
@@ -92,6 +109,66 @@ static void TestIndex(const char *expr, const char *yes, const char *no) {
   remove("test-expr.index");
 }
 
+static void TestUnicodeQuery(const char* expression, const char* corpus,
+                             const char* expected) {
+  FILE* fp = fopen("test-expr.index", "wb");
+  if (fp == NULL) Fail("can't write Unicode test index");
+  IndexMetadata metadata;
+  metadata.unicode_version = UnicodeVersionArray();
+  IndexWriter writer(fp, metadata);
+  std::vector<SymbolString> chains =
+      GenerateIndexChains(NormalizeCorpusText(corpus).symbols);
+  std::sort(chains.begin(), chains.end());
+  SymbolString previous;
+  for (const SymbolString& chain : chains) {
+    size_t same = 0;
+    while (same < previous.size() && same < chain.size() &&
+           previous[same] == chain[same]) ++same;
+    writer.Next(&chain, same, 1);
+    previous = chain;
+  }
+  writer.Finish();
+  fclose(fp);
+
+  fp = fopen("test-expr.index", "rb");
+  if (fp == NULL) Fail("can't read Unicode test index");
+  IndexReader reader(fp);
+  StdVectorFst parsed;
+  ExprError error;
+  const ExprCompileContext context{reader.alphabet(), {}};
+  if (!CompileExpr(expression, context, &parsed, &error)) {
+    fprintf(stderr, "FAIL: Unicode parse at %zu: %s\n", error.byte_offset,
+            error.message.c_str());
+    exit(1);
+  }
+  ExprFilter filter(parsed);
+  SearchDriver driver(&reader, &filter, filter.start(), 0);
+  driver.next();
+  if (driver.text == NULL || strcmp(driver.text, expected) != 0) {
+    fprintf(stderr, "FAIL: Unicode query [%s] -> [%s], expected [%s]\n",
+            expression, driver.text ? driver.text : "NULL", expected);
+    exit(1);
+  }
+  fclose(fp);
+  remove("test-expr.index");
+}
+
+static void TestUnicodeErrors() {
+  const std::vector<Symbol> alphabet = {EncodeScalar(U'\u4E00'),
+                                        EncodeScalar(U'\u9FA5')};
+  const ExprCompileContext context{alphabet, {}};
+  StdVectorFst parsed;
+  ExprError error;
+  if (CompileExpr("[\xE4\xB8\x80-\xE9\xBE\xA5]", context, &parsed, &error))
+    Fail("non-ASCII range must fail");
+  if (error.message.find("non-ASCII") == std::string::npos)
+    Fail("non-ASCII range error category");
+  if (CompileExpr("\xCE\xB1", context, &parsed, &error))
+    Fail("Greek literal must fail");
+  if (error.byte_offset != 0 || error.message.find("U+03B1") == std::string::npos)
+    Fail("Greek error offset and code point");
+}
+
 int main(int argc, char *argv[]) {
   TestIndex(
       "foo&bar",
@@ -142,6 +219,14 @@ int main(int argc, char *argv[]) {
       "<het><ral><seg><tan><rut><bla><oody><afl><ndi><cin><awe><ter> ",
       "the largest natural body of land in ice water ",
       "the largest natural body of water in iceland ");
+
+  TestUnicodeQuery("\xE4\xB8\xAD\xE5\x9B\xBD",
+                   "\xE4\xB8\xAD\xE5\x9B\xBD\xE7\xA7\x91\xE5\xAD\xA6\xE9\x99\xA2",
+                   "\xE4\xB8\xAD\xE5\x9B\xBD");
+  TestUnicodeQuery("[\xE4\xB8\xAD\xE8\x8B\xB1]\xE6\x96\x87",
+                   "\xE4\xB8\xAD\xE6\x96\x87", "\xE4\xB8\xAD\xE6\x96\x87");
+  TestUnicodeQuery("\xC3\x9F{2}", "ssss", "ssss");
+  TestUnicodeErrors();
 
   return 0;
 }

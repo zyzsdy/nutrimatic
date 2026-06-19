@@ -1,6 +1,7 @@
 #include "index.h"
 #include "search.h"
 #include "expr.h"
+#include "cli-utf8.h"
 
 #include "fst/concat.h"
 
@@ -30,6 +31,10 @@ static bool ParsePositiveSize(const char* text, size_t* value) {
 }
 
 int main(int argc, char *argv[]) {
+  Utf8CommandLine command_line(argc, argv);
+  argc = command_line.argc();
+  argv = command_line.argv();
+  ConfigureBinaryStandardStreams();
   size_t max_steps = kDefaultMaxSearchSteps;
   int next_arg = 1;
   if (next_arg < argc && strcmp(argv[next_arg], "--max-steps") == 0) {
@@ -50,36 +55,38 @@ int main(int argc, char *argv[]) {
   const char* index_path = argv[next_arg];
   const char* expression = argv[next_arg + 1];
 
-  SymbolTable *chars = new SymbolTable("chars");
-  chars->AddSymbol("epsilon", 0);
-  chars->AddSymbol("space", ' ');
-  for (int i = 33; i <= 127; ++i)
-    chars->AddSymbol(std::string(1, i), i);
-
-  StdVectorFst parsed;
-  parsed.SetInputSymbols(chars);
-  parsed.SetOutputSymbols(chars);
-
-  const char *p = ParseExpr(expression, &parsed, false);
-  if (p == NULL || *p != '\0') {
-    fprintf(stderr, "error: can't parse \"%s\"\n", p ? p : expression);
-    return 2;
-  }
-
-  // Require a space at the end, so the matches must be complete words.
-  StdVectorFst space;
-  ParseExpr(" ", &space, true);
-  Concat(&parsed, space);
-
-  FILE *fp = fopen(index_path, "rb");
+  FILE *fp = OpenFileUtf8(index_path, "rb");
   if (fp == NULL) {
     fprintf(stderr, "error: can't open \"%s\"\n", index_path);
     return 1;
   }
 
-  ExprFilter filter(parsed);
-  IndexReader reader(fp);
-  SearchDriver driver(&reader, &filter, filter.start(), 1e-6);
-  PrintAll(&driver, max_steps);
-  return 0;
+  try {
+    IndexReader reader(fp);
+    StdVectorFst parsed;
+    ExprError error;
+    const ExprCompileContext context{reader.alphabet(), {}};
+    if (!CompileExpr(expression, context, &parsed, &error)) {
+      fprintf(stderr, "error: expression byte %zu: %s\n", error.byte_offset,
+              error.message.c_str());
+      return 2;
+    }
+
+    StdVectorFst boundary;
+    const auto start = boundary.AddState();
+    const auto final = boundary.AddState();
+    boundary.SetStart(start);
+    boundary.SetFinal(final, StdArc::Weight::One());
+    for (Symbol symbol : {EncodeScalar(U' '), kPositionBreak, kEnd})
+      boundary.AddArc(start, StdArc(symbol, symbol, StdArc::Weight::One(), final));
+    Concat(&parsed, boundary);
+
+    ExprFilter filter(parsed);
+    SearchDriver driver(&reader, &filter, filter.start(), 1e-6);
+    PrintAll(&driver, max_steps);
+    return 0;
+  } catch (const std::exception& error) {
+    fprintf(stderr, "error: %s\n", error.what());
+    return 1;
+  }
 }

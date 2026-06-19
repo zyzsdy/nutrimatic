@@ -36,10 +36,36 @@ add_project_arguments(
 fst_dep = dependency('openfst')
 tre_dep = dependency('tre')
 xml2_dep = dependency('libxml-2.0')
+icu_uc_dep = dependency('icu-uc')
+icu_i18n_dep = dependency('icu-i18n')
+unicode_deps = [icu_uc_dep, icu_i18n_dep]
+
+unicode_lib = static_library(
+  'unicode',
+  ['unicode.cpp'],
+  dependencies: unicode_deps,
+)
+unicode_dep = declare_dependency(
+  link_with: unicode_lib,
+  dependencies: unicode_deps,
+)
+
+cli_utf8_lib = static_library(
+  'cli-utf8',
+  ['cli-utf8.cpp'],
+  dependencies: unicode_dep,
+)
 
 index_lib = static_library(
   'index',
-  ['index-reader.cpp', 'index-walker.cpp', 'index-writer.cpp'],
+  ['index-format.cpp', 'index-reader.cpp', 'index-walker.cpp', 'index-writer.cpp'],
+  dependencies: unicode_dep,
+)
+
+index_builder_lib = static_library(
+  'index-builder',
+  ['index-builder.cpp'],
+  dependencies: unicode_dep,
 )
 
 search_lib = static_library(
@@ -57,32 +83,81 @@ expr_lib = static_library(
     'expr-parse.cpp'
   ],
   link_with: [search_lib],
-  dependencies: fst_dep,
+  dependencies: [fst_dep, unicode_dep],
 )
 
 foreach p : ['remove-markup']
   executable(p, p + '.cpp', dependencies: [tre_dep, xml2_dep], install: true)
 endforeach
 
-foreach p : ['make-index', 'merge-indexes', 'dump-index', 'explore-index']
-  executable(p, p + '.cpp', link_with: index_lib, install: true)
+foreach p : ['merge-indexes', 'dump-index', 'explore-index']
+  executable(
+    p,
+    p + '.cpp',
+    link_with: [index_lib, cli_utf8_lib],
+    dependencies: unicode_dep,
+    install: true,
+  )
 endforeach
 
+executable(
+  'make-index',
+  'make-index.cpp',
+  link_with: [index_lib, index_builder_lib, cli_utf8_lib],
+  dependencies: unicode_dep,
+  install: true,
+)
+
 foreach p : ['find-anagrams', 'find-phone-words']
-  executable(p, p + '.cpp', link_with: search_lib, install: true)
+  executable(
+    p,
+    p + '.cpp',
+    link_with: [search_lib, cli_utf8_lib],
+    dependencies: unicode_dep,
+    install: true,
+  )
 endforeach
 
 foreach p : ['find-expr', 'test-expr']
-  executable(p, p + '.cpp', link_with: expr_lib, dependencies: fst_dep, install: true)
+  links = [expr_lib, cli_utf8_lib]
+  if p == 'test-expr'
+    links += index_builder_lib
+  endif
+  executable(
+    p,
+    p + '.cpp',
+    link_with: links,
+    dependencies: [fst_dep, unicode_dep],
+    install: true,
+  )
 endforeach
 
-executable('test-find-expr', 'test-find-expr.cpp', link_with: index_lib)
+executable(
+  'test-find-expr',
+  'test-find-expr.cpp',
+  link_with: [index_lib, index_builder_lib],
+  dependencies: unicode_dep,
+)
+
+executable('test-unicode', 'test-unicode.cpp', dependencies: unicode_dep)
+executable(
+  'test-index-format',
+  'test-index-format.cpp',
+  link_with: index_lib,
+  dependencies: unicode_dep,
+)
+executable(
+  'test-index-builder',
+  'test-index-builder.cpp',
+  link_with: index_builder_lib,
+  dependencies: unicode_dep,
+)
 
 executable(
-  'test-rank-lines',
-  ['test-rank-lines.cpp', 'rank-lines-lib.cpp'],
-  link_with: expr_lib,
-  dependencies: fst_dep,
+	'test-rank-lines',
+	['test-rank-lines.cpp', 'rank-lines-lib.cpp'],
+	link_with: [expr_lib, index_builder_lib],
+	dependencies: [fst_dep, unicode_dep],
 )
 
 executable(

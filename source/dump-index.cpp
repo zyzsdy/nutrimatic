@@ -1,29 +1,61 @@
-// Dump a Nutrimatic index file in alphabetic order with frequencies.
-// Mainly used for debugging index generation.
-
 #include "index.h"
+#include "cli-utf8.h"
 
-#include <inttypes.h>
-#include <stdio.h>
+#include <cstdio>
+#include <string>
 
-int main(int argc, char *argv[]) {
+namespace {
+
+std::string FormatChain(const SymbolString& chain) {
+  std::string result;
+  SymbolString visible;
+  const auto flush = [&] {
+    result += EncodeVisibleUtf8(visible);
+    visible.clear();
+  };
+  for (Symbol symbol : chain) {
+    if (symbol == kPositionBreak) {
+      flush();
+      result += "<PB>";
+    } else if (symbol == kEnd) {
+      flush();
+      result += "<END>";
+    } else {
+      visible.push_back(symbol);
+    }
+  }
+  flush();
+  return result;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  Utf8CommandLine command_line(argc, argv);
+  argc = command_line.argc();
+  argv = command_line.argv();
+  ConfigureBinaryStandardStreams();
   if (argc != 2) {
-    fprintf(stderr, "usage: %s input.index\n", argv[0]);
+    std::fprintf(stderr, "usage: %s input.index\n", argv[0]);
     return 2;
   }
-
-  FILE *fp = fopen(argv[1], "rb");
-  if (fp == NULL) {
-    fprintf(stderr, "error: can't open \"%s\"\n", argv[1]);
+  FILE* file = OpenFileUtf8(argv[1], "rb");
+  if (file == nullptr) {
+    std::fprintf(stderr, "error: can't open \"%s\"\n", argv[1]);
     return 1;
   }
-
-  IndexReader reader(fp);
-  IndexWalker walker(&reader, reader.root(), reader.count());
-  while (walker.text != NULL) {
-    printf("%5" PRId64 " [%s]\n", walker.count, walker.text);
-    walker.next();
+  try {
+    IndexReader reader(file);
+    IndexWalker walker(&reader, reader.root(), reader.count());
+    while (walker.chain != nullptr) {
+      const std::string formatted = FormatChain(*walker.chain);
+      std::printf("%llu [%s]\n", static_cast<unsigned long long>(walker.count),
+                  formatted.c_str());
+      walker.Next();
+    }
+    return 0;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "error: %s\n", error.what());
+    return 1;
   }
-
-  return 0;
 }

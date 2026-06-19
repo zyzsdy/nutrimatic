@@ -1,42 +1,54 @@
+#ifndef NUTRIMATIC_EXPR_H_
+#define NUTRIMATIC_EXPR_H_
+
+#include "search.h"
+
 #include "fst/mutable-fst.h"
 #include "fst/vector-fst.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
-#include <limits.h>
 
-const char *ParseExpr(const char *, fst::StdMutableFst* out, bool quoted);
-const char *ParseBranch(const char *, fst::StdMutableFst* out, bool quoted);
-const char *ParseFactor(const char *, fst::StdMutableFst* out, bool quoted);
-const char *ParsePiece(const char *, fst::StdMutableFst* out, bool quoted);
-const char *ParseAtom(const char *, fst::StdMutableFst* out, bool quoted);
-const char *ParseCharClass(const char *, std::vector<char>* out);
+struct ExprLimits {
+  std::uint64_t max_states = 1000000;
+  std::uint64_t max_arcs = 20000000;
+};
 
-const char *ParseAnagram(const char *, fst::StdMutableFst* out, bool quoted);
+struct ExprCompileContext {
+  const std::vector<Symbol>& alphabet;
+  ExprLimits limits;
+};
 
-void OptimizeExpr(fst::StdFst const& in, fst::StdMutableFst* out);
+struct ExprError {
+  std::size_t byte_offset = 0;
+  std::string message;
+};
 
-void IntersectExprs(
-    std::vector<fst::StdVectorFst> const& in,
-    fst::StdMutableFst* out);
+bool CompileExpr(std::string_view expression, const ExprCompileContext& context,
+                 fst::StdMutableFst* output, ExprError* error,
+                 bool quoted = false);
 
-class ExprFilter: public SearchFilter {
+const char* ParseExpr(const char*, fst::StdMutableFst* output, bool quoted);
+
+void OptimizeExpr(const fst::StdFst& input, fst::StdMutableFst* output);
+void IntersectExprs(const std::vector<fst::StdVectorFst>& input,
+                    fst::StdMutableFst* output);
+
+class ExprFilter : public SearchFilter {
  public:
-  ExprFilter(fst::StdFst const& parsed_expr);
-
-  State start() const { return start_state; }
-
-  bool is_accepting(State state) const {
-    assert(state >= 0 && state < accepting.size());
-    return accepting[state];
-  }
-
-  bool has_transition(State from, char ch, State *to) const {
-    assert(from >= 0 && from < accepting.size());
-    *to = next[(unsigned char) ch][from];
-    return *to >= 0;
-  }
+  explicit ExprFilter(const fst::StdFst& parsed_expr);
+  State start() const { return start_state_; }
+  bool is_accepting(State state) const override;
+  bool has_transition(State from, Symbol symbol, State* to) const override;
 
  private:
-  State start_state;
-  std::vector<bool> accepting;
-  std::vector<State> next[UCHAR_MAX + 1];
+  State start_state_ = 0;
+  std::vector<bool> accepting_;
+  std::vector<std::vector<std::pair<Symbol, State>>> transitions_;
 };
+
+#endif  // NUTRIMATIC_EXPR_H_

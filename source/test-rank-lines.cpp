@@ -1,5 +1,6 @@
 #include "rank-lines-lib.h"
 #include "index.h"
+#include "index-builder.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,12 +71,32 @@ static void WriteTestIndex() {
     exit(1);
   }
 
-  IndexWriter writer(fp);
-  writer.next("cat ", 0, 100);
-  writer.next("cat dog ", 3, 80);
-  writer.next("catfish ", 3, 5);
-  writer.next("dog ", 0, 90);
-  writer.next(NULL, 0, 0);
+  IndexMetadata metadata;
+  metadata.unicode_version = UnicodeVersionArray();
+  IndexWriter writer(fp, metadata);
+  std::vector<std::pair<std::string, std::uint64_t>> entries = {
+      {"cat", 100}, {"cat dog", 80}, {"catfish", 5}, {"dog", 90}};
+  std::vector<std::pair<SymbolString, std::uint64_t>> chains;
+  for (const auto& entry : entries) {
+    std::vector<SymbolString> entry_chains =
+        GenerateIndexChains(NormalizeCorpusText(entry.first).symbols);
+    for (SymbolString& chain : entry_chains)
+      chains.push_back({std::move(chain), entry.second});
+  }
+  std::sort(chains.begin(), chains.end(),
+            [](const auto& left, const auto& right) {
+              return left.first < right.first;
+            });
+  SymbolString previous;
+  for (const auto& entry : chains) {
+    const SymbolString& chain = entry.first;
+    size_t same = 0;
+    while (same < previous.size() && same < chain.size() &&
+           previous[same] == chain[same]) ++same;
+    writer.Next(&chain, same, entry.second);
+    previous = chain;
+  }
+  writer.Finish();
   fclose(fp);
 }
 

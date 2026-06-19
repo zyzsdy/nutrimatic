@@ -54,9 +54,17 @@ LineRankResult RankLine(const IndexReader& reader,
   const char* end = ParseExpr(result.text.c_str(), &parsed, false);
   if (end == NULL || *end != '\0') return result;
 
-  StdVectorFst space;
-  ParseExpr(" ", &space, true);
-  Concat(&parsed, space);
+  StdVectorFst boundary;
+  const auto boundary_start = boundary.AddState();
+  const auto boundary_final = boundary.AddState();
+  boundary.SetStart(boundary_start);
+  boundary.SetFinal(boundary_final, StdArc::Weight::One());
+  for (Symbol symbol : {EncodeScalar(U' '), kPositionBreak, kEnd}) {
+    boundary.AddArc(boundary_start,
+                    StdArc(symbol, symbol, StdArc::Weight::One(),
+                           boundary_final));
+  }
+  Concat(&parsed, boundary);
 
   ExprFilter filter(parsed);
   SearchDriver driver(&reader, &filter, filter.start(), 1e-6);

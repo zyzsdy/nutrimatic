@@ -1,144 +1,123 @@
 #include "index.h"
 
-#include <assert.h>
-
 #include <algorithm>
+#include <limits>
 
-using namespace std;
+namespace {
 
-IndexWriter::IndexWriter(FILE *f): fp(f), pos(ftello(fp)) {
-  chain.resize((chain_size = 1));
-  chain[0].ch = '\0';
-  chain[0].count = 0;
+std::uint64_t AddChecked(std::uint64_t left, std::uint64_t right) {
+  if (right > std::numeric_limits<std::uint64_t>::max() - left)
+    throw IndexFormatError("index frequency overflow");
+  return left + right;
 }
 
-void IndexWriter::next(const char *text, int same, int64_t count) {
-  assert((text == NULL && count == 0 && same == 0) ||
-         (text != NULL && count > 0));
-  while (text != NULL && same + 1 < int(chain_size) &&
-         text[same] == chain[same + 1].ch) ++same;
+}  // namespace
 
-  while (int(chain_size) - 1 > same) {
-    assert(chain_size >= 2);
-    Pending *pending = &chain[--chain_size];
-    Pending *parent = &chain[chain_size - 1];
-    parent->choices.push_back(write(fp, *pending));
-    pending->choices.clear();
-  }
-
-  assert(chain_size >= 1);
-  while (text != NULL && text[chain_size - 1] != '\0') {
-    if (++chain_size > chain.size()) chain.resize(chain_size);
-    assert(chain[chain_size - 1].choices.empty());
-    chain[chain_size - 1].ch = text[chain_size - 2];
-    chain[chain_size - 1].count = 0;
-  }
-
-  chain[chain_size - 1].count += count;
-
-  if (text == NULL) {
-    assert(same == 0 && count == 0 && chain_size == 1);
-    write(fp, chain[0]);
-    chain.clear();
-    assert(ftello(fp) == pos);
-  }
+IndexWriter::IndexWriter(FILE* file, const IndexMetadata& metadata)
+    : file_(file), metadata_(metadata) {
+  if (file_ == nullptr) throw IndexFormatError("null index output file");
+  std::vector<std::uint8_t> header;
+  EncodeHeader(metadata_, &header);
+  WriteBytes(header);
+  chain_.resize(1);
+  chain_size_ = 1;
 }
 
-IndexWriter::Saved IndexWriter::write(FILE* fp, Pending const& in) {
-  Saved out;
-  out.ch = in.ch;
-  out.count = in.count;
+IndexWriter::~IndexWriter() = default;
 
-  static const off_t none = -1;
-  if (in.choices.size() == 0) {
-    out.pos = none;
-    assert(out.count > 0);
-    return out;
+void IndexWriter::WriteBytes(const std::vector<std::uint8_t>& bytes) {
+  if (!bytes.empty() &&
+      std::fwrite(bytes.data(), 1, bytes.size(), file_) != bytes.size())
+    throw IndexFormatError("failed to write index file");
+  if (bytes.size() > std::numeric_limits<std::uint64_t>::max() - position_)
+    throw IndexFormatError("index file offset overflow");
+  position_ += bytes.size();
+}
+
+IndexWriter::Saved IndexWriter::WritePending(const Pending& pending) {
+  Saved saved;
+  saved.symbol = pending.symbol;
+  saved.count = pending.terminal_count;
+  if (pending.choices.empty()) {
+    if (saved.count == 0) throw IndexFormatError("empty leaf in index trie");
+    return saved;
+  }
+  if (pending.terminal_count != 0)
+    throw IndexFormatError("index chain terminates without END symbol");
+
+  std::vector<EncodedNodeChild> children;
+  children.reserve(pending.choices.size());
+  for (const Saved& choice : pending.choices) {
+    saved.count = AddChecked(saved.count, choice.count);
+    children.push_back({choice.symbol, choice.count, choice.node_offset});
+  }
+  const std::vector<std::uint8_t> encoded = EncodeNode(position_, children);
+  saved.node_offset = position_;
+  WriteBytes(encoded);
+  return saved;
+}
+
+void IndexWriter::Next(const SymbolString* symbols, std::size_t same,
+                       std::uint64_t count) {
+  if (finished_) throw IndexFormatError("index writer is already finished");
+  if (symbols == nullptr || symbols->empty() || count == 0)
+    throw IndexFormatError("invalid index chain");
+  if (symbols->back() != kEnd)
+    throw IndexFormatError("index chain must end with END");
+  if (same > symbols->size() || same + 1 > chain_size_)
+    throw IndexFormatError("invalid common prefix length");
+
+  while (same + 1 < chain_size_ && same < symbols->size() &&
+         (*symbols)[same] == chain_[same + 1].symbol) {
+    ++same;
+  }
+  while (chain_size_ - 1 > same) {
+    Pending& pending = chain_[--chain_size_];
+    Pending& parent = chain_[chain_size_ - 1];
+    parent.choices.push_back(WritePending(pending));
+    pending.choices.clear();
+    pending.terminal_count = 0;
   }
 
-  if (in.choices.size() == 1 && in.count == 0 &&
-      in.choices[0].ch >= 0x20 &&
-      in.choices[0].ch < 0x80 &&
-      in.choices[0].pos == pos) {
-    fputc(in.choices[0].ch, fp);
-    out.pos = ++pos;
-    out.count = in.choices[0].count;
-    assert(out.count > 0);
-    return out;
+  for (std::size_t i = same; i < symbols->size(); ++i) {
+    if (++chain_size_ > chain_.size()) chain_.resize(chain_size_);
+    Pending& pending = chain_[chain_size_ - 1];
+    if (!pending.choices.empty() || pending.terminal_count != 0)
+      throw IndexFormatError("dirty index writer state");
+    pending.symbol = (*symbols)[i];
+    if (pending.symbol == kEpsilon || pending.symbol > kPositionBreak)
+      throw IndexFormatError("invalid symbol in index chain");
+    if (pending.symbol < kEnd) alphabet_.insert(pending.symbol);
   }
+  Pending& leaf = chain_[chain_size_ - 1];
+  leaf.terminal_count = AddChecked(leaf.terminal_count, count);
+}
 
-  int64_t max_count = 0;
-  off_t max_offset = 0;
-  for (size_t i = 0; i < in.choices.size(); ++i) {
-    assert(i == 0 || in.choices[i].ch > in.choices[i - 1].ch);
-    assert(in.choices[i].count > 0);
-    out.count += in.choices[i].count;
-    max_count = max(max_count, in.choices[i].count);
-    if (in.choices[i].pos != none)
-      max_offset = max(max_offset, max<int64_t>(pos - in.choices[i].pos, 1));
+void IndexWriter::Finish() {
+  if (finished_) throw IndexFormatError("index writer is already finished");
+  if (chain_size_ <= 1) throw IndexFormatError("cannot finish an empty index");
+  while (chain_size_ > 1) {
+    Pending& pending = chain_[--chain_size_];
+    Pending& parent = chain_[chain_size_ - 1];
+    parent.choices.push_back(WritePending(pending));
+    pending.choices.clear();
+    pending.terminal_count = 0;
   }
+  const Saved root = WritePending(chain_[0]);
 
-  int mode;
-  if (max_offset == 0 && max_count < 0x100) {
-    mode = 0;
-    for (size_t i = 0; i < in.choices.size(); ++i) {
-      fputc(in.choices[i].ch, fp);
-      fputc(in.choices[i].count, fp);
-    }
-    pos += 2 * in.choices.size();
-  } else if (max_offset < 0xFF && max_count < 0x100) {
-    mode = 0x80;
-    for (size_t i = 0; i < in.choices.size(); ++i) {
-      fputc(in.choices[i].ch, fp);
-      fputc(in.choices[i].count, fp);
-      fputc(in.choices[i].pos == none ? -1 : pos - in.choices[i].pos, fp);
-    }
-    pos += 3 * in.choices.size();
-  } else if (max_offset < 0xFFFF && max_count < 0x100) {
-    mode = 0xA0;
-    for (size_t i = 0; i < in.choices.size(); ++i) {
-      fputc(in.choices[i].ch, fp);
-      fputc(in.choices[i].count, fp);
-      off_t op = in.choices[i].pos == none ? -1 : pos - in.choices[i].pos;
-      fputc(op, fp);
-      fputc(op >> 8, fp);
-    }
-    pos += 4 * in.choices.size();
-  } else if (max_offset < 0xFFFF && max_count < 0x10000) {
-    mode = 0xC0;
-    for (size_t i = 0; i < in.choices.size(); ++i) {
-      fputc(in.choices[i].ch, fp);
-      fputc(in.choices[i].count, fp);
-      fputc(in.choices[i].count >> 8, fp);
-      off_t op = in.choices[i].pos == none ? -1 : pos - in.choices[i].pos;
-      fputc(op, fp);
-      fputc(op >> 8, fp);
-    }
-    pos += 5 * in.choices.size();
-  } else {
-    mode = 0xE0;
-    for (size_t i = 0; i < in.choices.size(); ++i) {
-      fputc(in.choices[i].ch, fp);
-      for (int j = 0; j < 8; ++j)
-        fputc(in.choices[i].count >> (j * 8), fp);
-      off_t op = in.choices[i].pos == none ? -1 : pos - in.choices[i].pos;
-      for (int j = 0; j < 8; ++j)
-        fputc(op >> (j * 8), fp);
-    }
-    pos += 17 * in.choices.size();
-  }
+  const std::vector<Symbol> alphabet(alphabet_.begin(), alphabet_.end());
+  const std::uint64_t alphabet_offset = position_;
+  WriteBytes(EncodeAlphabet(alphabet));
 
-  assert(in.choices.size() <= 0x100);
-  if (in.choices.size() < 0x20) {
-    fputc(in.choices.size() + mode, fp);
-    pos += 1;
-  } else {
-    fputc(in.choices.size(), fp);
-    fputc(mode, fp);
-    pos += 2;
-  }
-
-  out.pos = pos;
-  assert(out.count > 0);
-  return out;
+  IndexFooter footer;
+  footer.root_offset = root.node_offset;
+  footer.root_count = root.count;
+  footer.alphabet_offset = alphabet_offset;
+  footer.alphabet_count = static_cast<std::uint32_t>(alphabet.size());
+  footer.file_length = position_ + kIndexFooterSize;
+  std::vector<std::uint8_t> encoded_footer;
+  EncodeFooter(footer, &encoded_footer);
+  WriteBytes(encoded_footer);
+  if (std::fflush(file_) != 0) throw IndexFormatError("failed to flush index file");
+  finished_ = true;
 }

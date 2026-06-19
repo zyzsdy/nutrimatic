@@ -8,6 +8,7 @@ import pytest
 
 from build_wikipedia_index import (
     BuildConfig,
+    DumpConfig,
     build_partial_indexes,
     check_native_windows,
     count_merge_jobs,
@@ -19,6 +20,37 @@ from build_wikipedia_index import (
 )
 
 
+def test_multiple_dump_configs_use_isolated_paths(tmp_path):
+    config = BuildConfig(
+        data_dir=tmp_path,
+        dumps=(
+            DumpConfig("enwiki", "https://example/en", Path("en.bz2"), Path("en-text"), Path("en-index")),
+            DumpConfig("zhwiki", "https://example/zh", Path("zh.bz2"), Path("zh-text"), Path("zh-index")),
+        ),
+    )
+
+    assert [dump.name for dump in config.dumps] == ["enwiki", "zhwiki"]
+    assert config.dumps[0].text_dir != config.dumps[1].text_dir
+    assert config.dumps[0].index_prefix != config.dumps[1].index_prefix
+
+
+def test_main_accepts_repeated_dump_options(tmp_path, monkeypatch):
+    captured = []
+    monkeypatch.setattr("build_wikipedia_index.check_native_windows", lambda: None)
+    monkeypatch.setattr(
+        "build_wikipedia_index.download_dump",
+        lambda config, dump=None, *, dry_run: captured.append(dump),
+    )
+
+    assert main([
+        "--data-dir", str(tmp_path),
+        "--dump", "enwiki=https://example/en",
+        "--dump", "zhwiki=https://example/zh",
+        "--steps", "download",
+    ]) == 0
+    assert [dump.name for dump in captured] == ["enwiki", "zhwiki"]
+
+
 def test_main_uses_explicit_dump_path(tmp_path, monkeypatch):
     dump_path = tmp_path / "zhwiki-latest-pages-articles.xml.bz2"
     captured_configs = []
@@ -26,7 +58,7 @@ def test_main_uses_explicit_dump_path(tmp_path, monkeypatch):
     monkeypatch.setattr("build_wikipedia_index.check_native_windows", lambda: None)
     monkeypatch.setattr(
         "build_wikipedia_index.download_dump",
-        lambda config, *, dry_run: captured_configs.append(config),
+        lambda config, dump=None, *, dry_run: captured_configs.append(config),
     )
 
     result = main(

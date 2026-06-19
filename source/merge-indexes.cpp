@@ -1,141 +1,156 @@
 #include "index.h"
+#include "cli-utf8.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
 #include <queue>
 #include <string>
-#include <vector>
 #include <utility>
+#include <vector>
 
-#include <assert.h>
-#include <stdio.h>
-#include <string.h>
+namespace {
 
-using namespace std;
-
-#define DEBUG 0
+bool IsFrequencyBoundary(Symbol symbol) {
+  return symbol == EncodeScalar(U' ') || symbol == kPositionBreak ||
+         symbol == kEnd;
+}
 
 struct ReaderCompare {
-  // True if x should come *after* y.
-  bool operator()(IndexWalker* x, IndexWalker* y) const {
-    int same = min(x->same, y->same);
-    assert(memcmp(x->text, y->text, same) == 0);
-    return strcmp(x->text + same, y->text + same) > 0;
+  bool operator()(const IndexWalker* left, const IndexWalker* right) const {
+    return *left->chain > *right->chain;
   }
 };
 
-struct FrequencyCutoffWriter {
-  FrequencyCutoffWriter(IndexWriter* out, int min):
-      output(out), cutoff(min), output_same(0) {
-    words.push_back(make_pair(0, 0));
+class FrequencyCutoffWriter {
+ public:
+  FrequencyCutoffWriter(IndexWriter* output, std::uint64_t cutoff)
+      : output_(output), cutoff_(cutoff) {
+    boundaries_.push_back({0, 0});
   }
 
-  void next(const char *text, int same, int64_t count) {
-    if (text != NULL) {
-      while (same < int(saved.size()) && text[same] == saved[same]) ++same;
-      assert(memcmp(saved.c_str(), text, same) == 0);
-      assert(strcmp(saved.c_str() + same, text + same) <= 0);
-#if DEBUG
-      fprintf(stderr, "input: [%.*s|%s] * %d\n", same, text, text+same, count);
-#endif
+  void Next(const SymbolString* chain, std::size_t same, std::uint64_t count) {
+    if (chain != nullptr) {
+      while (same < saved_.size() && same < chain->size() &&
+             (*chain)[same] == saved_[same]) ++same;
+      if (!std::equal(saved_.begin(), saved_.begin() + same, chain->begin()))
+        throw IndexFormatError("merge input is not sorted");
+      if (std::lexicographical_compare(chain->begin() + same, chain->end(),
+                                       saved_.begin() + same, saved_.end()))
+        throw IndexFormatError("merge input is not sorted");
     }
 
-    assert(!words.empty());
-    while (words.back().first > (size_t) same) {
-      pair<size_t, int64_t> last_word = words.back();
-      words.pop_back();
-
-      assert(saved.size() >= last_word.first);
-      saved.resize(last_word.first);
-      output_same = min(output_same, saved.size());
-      if (last_word.second >= cutoff ||
-          (last_word.second > 0 && output_same == last_word.first)) {
-#if DEBUG
-        fprintf(stderr, "output: [%.*s|%s] * %d\n",
-            output_same, saved.c_str(),
-            saved.c_str()+output_same, last_word.second);
-#endif
-        output->next(saved.c_str(), output_same, last_word.second);
-        output_same = words.back().first;
+    while (boundaries_.back().first > same) {
+      const auto boundary = boundaries_.back();
+      boundaries_.pop_back();
+      saved_.resize(boundary.first);
+      output_same_ = std::min(output_same_, saved_.size());
+      if (boundary.second >= cutoff_ ||
+          (boundary.second > 0 && output_same_ == boundary.first)) {
+        output_->Next(&saved_, output_same_, boundary.second);
+        output_same_ = boundaries_.back().first;
       } else {
-        words.back().second += last_word.second;
-        output_same = min(output_same, words.back().first);
+        if (boundary.second > UINT64_MAX - boundaries_.back().second)
+          throw IndexFormatError("merged frequency overflow");
+        boundaries_.back().second += boundary.second;
+        output_same_ = std::min(output_same_, boundaries_.back().first);
       }
     }
 
-    saved.resize(same);
-    if (text != NULL) {
-      saved.append(text + same);
-      while (const char *space = strchr(text + same, ' ')) {
-        same = space - text + 1;
-        words.push_back(make_pair(same, 0));
+    saved_.resize(same);
+    if (chain != nullptr) {
+      saved_.insert(saved_.end(), chain->begin() + same, chain->end());
+      for (std::size_t i = same; i < chain->size(); ++i) {
+        if (IsFrequencyBoundary((*chain)[i])) boundaries_.push_back({i + 1, 0});
       }
     }
+    if (count > UINT64_MAX - boundaries_.back().second)
+      throw IndexFormatError("merged frequency overflow");
+    boundaries_.back().second += count;
+  }
 
-    if (!words.empty()) words.back().second += count;
-    if (text == NULL) output->next(NULL, 0, 0);
+  void Finish() {
+    Next(nullptr, 0, 0);
+    output_->Finish();
   }
 
  private:
-  IndexWriter* const output;
-  const int cutoff;
-  size_t output_same;
-  std::string saved;
-  std::vector<pair<size_t, int64_t> > words;
+  IndexWriter* output_;
+  std::uint64_t cutoff_;
+  std::size_t output_same_ = 0;
+  SymbolString saved_;
+  std::vector<std::pair<std::size_t, std::uint64_t>> boundaries_;
 };
 
-int main(int argc, char *argv[]) {
+}  // namespace
+
+int main(int argc, char** argv) {
+  Utf8CommandLine command_line(argc, argv);
+  argc = command_line.argc();
+  argv = command_line.argv();
+  ConfigureBinaryStandardStreams();
   if (argc < 4) {
-    fprintf(stderr, "usage: %s min input.index ... out.index\n", argv[0]);
+    std::fprintf(stderr, "usage: %s min input.index ... out.index\n", argv[0]);
+    return 2;
+  }
+  char* end = nullptr;
+  const unsigned long long parsed = std::strtoull(argv[1], &end, 10);
+  if (end == argv[1] || *end != '\0' || parsed == 0) {
+    std::fprintf(stderr, "error: illegal frequency threshold \"%s\"\n", argv[1]);
     return 2;
   }
 
-  int cutoff = atoi(argv[1]);
-  if (cutoff <= 0) {
-    fprintf(stderr, "error: illegal frequency threshold \"%s\"\n", argv[1]);
-    return 2;
-  }
-
-  priority_queue<IndexWalker*, std::vector<IndexWalker*>, ReaderCompare> queue;
-  for (int i = 2; i < argc - 1; ++i) {
-    FILE *fp = fopen(argv[i], "rb");
-    if (fp == NULL) {
-      fprintf(stderr, "error: can't read \"%s\"\n", argv[i]);
-      return 1;
+  try {
+    std::priority_queue<IndexWalker*, std::vector<IndexWalker*>, ReaderCompare> queue;
+    std::vector<std::unique_ptr<IndexReader>> readers;
+    std::vector<std::unique_ptr<IndexWalker>> walkers;
+    IndexMetadata metadata;
+    bool have_metadata = false;
+    for (int i = 2; i < argc - 1; ++i) {
+      FILE* file = OpenFileUtf8(argv[i], "rb");
+      if (file == nullptr)
+        throw IndexFormatError(std::string("cannot read \"") + argv[i] + "\"");
+      auto reader = std::make_unique<IndexReader>(file);
+      std::fclose(file);
+      if (!have_metadata) {
+        metadata = reader->metadata();
+        have_metadata = true;
+      } else if (reader->metadata() != metadata) {
+        throw IndexFormatError(std::string("index metadata mismatch in \"") +
+                               argv[i] + "\"");
+      }
+      auto walker =
+          std::make_unique<IndexWalker>(reader.get(), reader->root(), reader->count());
+      if (walker->chain != nullptr) queue.push(walker.get());
+      readers.push_back(std::move(reader));
+      walkers.push_back(std::move(walker));
     }
 
-    IndexReader* index = new IndexReader(fp);
-    IndexWalker* walker = new IndexWalker(index, index->root(), index->count());
-    if (walker->text == NULL) {
-      fprintf(stderr, "warning: empty input \"%s\"\n", argv[i]);
-      delete walker;
-    } else {
-      queue.push(walker);
+    FILE* existing = OpenFileUtf8(argv[argc - 1], "rb");
+    if (existing != nullptr) {
+      std::fclose(existing);
+      throw IndexFormatError(std::string("output already exists: \"") +
+                             argv[argc - 1] + "\"");
     }
-  }
-
-  if (fopen(argv[argc - 1], "rb") != NULL) {
-    fprintf(stderr, "error: output \"%s\" already exists\n", argv[argc - 1]);
+    FILE* output_file = OpenFileUtf8(argv[argc - 1], "wb");
+    if (output_file == nullptr)
+      throw IndexFormatError(std::string("cannot write \"") + argv[argc - 1] +
+                             "\"");
+    IndexWriter output(output_file, metadata);
+    FrequencyCutoffWriter writer(&output, parsed);
+    while (!queue.empty()) {
+      IndexWalker* next = queue.top();
+      queue.pop();
+      writer.Next(next->chain, next->same, next->count);
+      next->Next();
+      if (next->chain != nullptr) queue.push(next);
+    }
+    writer.Finish();
+    std::fclose(output_file);
+    return 0;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "error: %s\n", error.what());
     return 1;
   }
-
-  FILE *out = fopen(argv[argc - 1], "wb");
-  if (out == NULL) {
-    fprintf(stderr, "error: can't write \"%s\"\n", argv[argc - 1]);
-    return 1;
-  }
-  IndexWriter output(out);
-  FrequencyCutoffWriter writer(&output, cutoff);
-
-  while (!queue.empty()) {
-    IndexWalker *next = queue.top(); queue.pop();
-    writer.next(next->text, next->same, next->count);
-    next->next();
-    if (next->text == NULL)
-      delete next;
-    else
-      queue.push(next);
-  }
-
-  writer.next(NULL, 0, 0);
-  return 0;
 }

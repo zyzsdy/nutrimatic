@@ -1,51 +1,48 @@
 #include "index.h"
 
-#include <assert.h>
-#include <limits.h>
-#include <stdlib.h>
-
-using namespace std;
-
-IndexWalker::IndexWalker(const IndexReader* r, off_t node, int64_t count):
-    reader(r), buf(NULL), buf_alloc(0) {
-  stack.resize((stack_size = 1));
-  stack[0].next = 0;
-  reader->children(node, count, CHAR_MIN, CHAR_MAX, &stack[0].choices);
-  next();
+IndexWalker::IndexWalker(const IndexReader* reader, IndexReader::Node node,
+                         std::uint64_t count)
+    : reader_(reader) {
+  (void)count;
+  if (reader_ == nullptr) throw IndexFormatError("null index reader");
+  stack_.resize(1);
+  stack_size_ = 1;
+  reader_->Children(node, kEpsilon, kPositionBreak, &stack_[0].choices);
+  Next();
 }
 
-void IndexWalker::next() {
-  while (stack_size > 0 &&
-         stack[stack_size - 1].next == stack[stack_size - 1].choices.size()) {
-    stack[--stack_size].choices.clear();
+void IndexWalker::Next() {
+  while (stack_size_ != 0 &&
+         stack_[stack_size_ - 1].next ==
+             stack_[stack_size_ - 1].choices.size()) {
+    stack_[--stack_size_].choices.clear();
   }
-
-  if (stack_size == 0) {
-    text = NULL;
-    same = 0; 
+  if (stack_size_ == 0) {
+    chain = nullptr;
+    same = 0;
     count = 0;
     return;
   }
 
-  same = stack_size - 1;
+  same = stack_size_ - 1;
+  for (;;) {
+    State& parent = stack_[stack_size_ - 1];
+    const IndexReader::Choice choice = parent.choices[parent.next++];
+    if (buffer_.size() < stack_size_) buffer_.resize(stack_size_);
+    buffer_[stack_size_ - 1] = choice.symbol;
+    if (choice.next == 0) {
+      buffer_.resize(stack_size_);
+      chain = &buffer_;
+      count = choice.count;
+      return;
+    }
 
-  do {
-    if (++stack_size > stack.size()) stack.resize(stack_size);
-    State *parent = &stack[stack_size - 2], *child = &stack[stack_size - 1];
-    IndexReader::Choice const& choice = parent->choices[parent->next++];
-
-    child->next = 0;
-    assert(child->choices.empty());
-    count = reader->children(
-        choice.next, choice.count, CHAR_MIN, CHAR_MAX, &child->choices);
-
-    if (stack_size - 1 >= buf_alloc)
-      buf = (char*) realloc(buf, (buf_alloc = stack_size*2));
-    buf[stack_size - 2] = choice.ch;
-  } while (count == 0);
-
-  assert(count > 0);
-  assert(stack_size - 1 < buf_alloc);
-  buf[stack_size - 1] = '\0';
-  text = buf;
+    if (++stack_size_ > stack_.size()) stack_.resize(stack_size_);
+    State& child = stack_[stack_size_ - 1];
+    child.next = 0;
+    child.choices.clear();
+    reader_->Children(choice.next, kEpsilon, kPositionBreak, &child.choices);
+    if (child.choices.empty())
+      throw IndexFormatError("referenced index node has no children");
+  }
 }

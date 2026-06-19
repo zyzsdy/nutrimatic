@@ -16,6 +16,8 @@ import subprocess
 import sys
 import urllib
 
+from cgi_utf8 import InternalUtf8EncodingError, decode_subprocess_utf8
+
 # When find-expr reports searching this many nodes, give up and
 # print the "computation limit exceeded" message
 MAX_COMPUTATION = 1000000
@@ -28,6 +30,7 @@ PER_PAGE = 100
 
 HOME_PAGE_BEGIN = """
 <html lang="en"><head>
+  <meta charset="utf-8">
   <title>Nutrimatic</title>
   <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -38,9 +41,10 @@ HOME_PAGE_BEGIN = """
 <input type=search name=q size=45 autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
 <input type=submit name=go value="Go">
 </form>
-<p>Matches patterns against a dictionary of words and phrases
-mined from Wikipedia.  Text is normalized to lowercase letters,
-numbers and spaces.  More common results are returned first.</p>
+<p>Matches patterns against words and phrases mined from Wikipedia.
+Latin, Han, Hiragana, Katakana, and Hangul text is Unicode-normalized;
+English spaces remain visible while invisible CJK position boundaries may
+always be crossed. More common results are returned first.</p>
 """
 
 HOME_PAGE_LIST_BEGIN = """
@@ -78,6 +82,7 @@ not completely documented, but it's there!
 
 RESULT_PAGE_BEGIN = """
 <html lang="en"><head>
+  <meta charset="utf-8">
   <title>%(query)s - Nutrimatic</title>
   <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -114,7 +119,7 @@ RESULT_PAGE_END = """
 # List of syntax descriptions and examples for the search page
 
 SYNTAX = [
-  ("a-z, 0-9, space", "literal match"),
+  ("Unicode literal", "Latin/CJK literal match by normalized code point"),
   ("[], (), {}, |, ., ?, *, +", "same as regexp"),
   ("\"expr\"", "forbid word breaks without a space or hyphen"),
   ("expr&expr", "both expressions must match"),
@@ -142,7 +147,7 @@ EDITIONS = [
 binary = os.environ["NUTRIMATIC_FIND_EXPR"]
 index = os.environ["NUTRIMATIC_INDEX"]
 
-print('Content-type: text/html')
+print('Content-Type: text/html; charset=utf-8')
 print()
 
 fs = cgi.FieldStorage()
@@ -199,9 +204,18 @@ print(RESULT_PAGE_BEGIN % {"query": html.escape(query)})
 
 rn = 0
 while 1:
-  line = proc.stdout.readline().decode()
+  try:
+    line = decode_subprocess_utf8(proc.stdout.readline())
+  except InternalUtf8EncodingError as error:
+    proc.kill()
+    print(RESULT_ERROR % {"text": html.escape(str(error))})
+    break
   if not line:
-    error = proc.stderr.read().decode().strip()
+    try:
+      error = decode_subprocess_utf8(proc.stderr.read()).strip()
+    except InternalUtf8EncodingError as decode_error:
+      print(RESULT_ERROR % {"text": html.escape(str(decode_error))})
+      break
     if error:
       print(RESULT_ERROR % {"text": html.escape(error).replace("\n", "<br>")})
     elif proc.poll():

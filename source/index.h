@@ -1,100 +1,91 @@
-#define _FILE_OFFSET_BITS 64
-#include <stdio.h>
-#include <unistd.h>
-#include <stdint.h>
+#ifndef NUTRIMATIC_INDEX_H_
+#define NUTRIMATIC_INDEX_H_
 
-#include <queue>
+#include "index-format.h"
+#include "unicode.h"
+
+#include <cstdio>
+#include <cstddef>
+#include <cstdint>
+#include <set>
 #include <vector>
-
-/*
-  Index format: The index is series of trie nodes, parents following children.
-  Each trie node is a table of letter, frequency, and child-node-offset values.
-  For space efficiency, there are several node formats:
-
-  Parent of leaves (no child has children) with byte-sized frequency values:
-
-    (letter frequency)* (num[01..1F] | num 00)
-
-  One child node, immediately preceding, with the same frequency as this node:
-
-    letter[20-7F]
-
-  Byte-sized frequency and offset values:
-
-    (letter frequency offset)* (num[01..1F]+80 | num 80)
-
-  Byte-sized frequency, 2-byte offset values:
-
-    (letter frequency offset:2)* (num[01..1F]+A0 | num A0)
-
-  2-byte frequency and 2-byte offset values:
-
-    (letter frequency:2 offset:2)* (num[01..1F]+C0 | num C0)
-
-  8-byte frequency and 8-byte offset values:
-
-    (letter frequency:8 offset:8)* (num[01..1F]+E0 | num E0)
-
-  In all cases, offset values are from the end of the child node to the
-  start of the parent node.  An offset of 0 means the child immediately
-  precedes the parent node.  The maximum offset (all FF) means there is
-  no child node (NULL pointer equivalent).
-*/
 
 class IndexWriter {
  public:
-  IndexWriter(FILE*);
-  void next(const char* text, int same, int64_t count);
+  IndexWriter(FILE* file, const IndexMetadata& metadata);
+  ~IndexWriter();
+  void Next(const SymbolString* chain, std::size_t same, std::uint64_t count);
+  void Finish();
 
  private:
-  FILE* const fp;
-  off_t pos;
+  struct Saved {
+    Symbol symbol = 0;
+    std::uint64_t count = 0;
+    std::uint64_t node_offset = 0;
+  };
+  struct Pending {
+    Symbol symbol = 0;
+    std::uint64_t terminal_count = 0;
+    std::vector<Saved> choices;
+  };
 
-  struct Saved { int ch; int64_t count; off_t pos; };
-  struct Pending { int ch; int64_t count; std::vector<Saved> choices; };
-  std::vector<Pending> chain;
-  size_t chain_size;
+  Saved WritePending(const Pending& pending);
+  void WriteBytes(const std::vector<std::uint8_t>& bytes);
 
-  Saved write(FILE* fp, Pending const&);
+  FILE* file_;
+  IndexMetadata metadata_;
+  std::uint64_t position_ = 0;
+  std::vector<Pending> chain_;
+  std::size_t chain_size_ = 0;
+  std::set<Symbol> alphabet_;
+  bool finished_ = false;
 };
 
 class IndexReader {
  public:
-  IndexReader(FILE*);
-  ~IndexReader();
+  using Node = std::uint64_t;
+  struct Choice {
+    Symbol symbol = 0;
+    std::uint64_t count = 0;
+    Node next = 0;
+  };
 
-  typedef off_t Node;
-  Node root() const { return length; }
-  int64_t count() const { return total; }
-
-  struct Choice { char ch; int64_t count; Node next; };
-  int children(Node parent, int64_t count,
-               char min, char max,
-               std::vector<Choice>* out) const;
+  explicit IndexReader(FILE* file);
+  const IndexMetadata& metadata() const { return metadata_; }
+  const std::vector<Symbol>& alphabet() const { return alphabet_; }
+  Node root() const { return footer_.root_offset; }
+  std::uint64_t count() const { return footer_.root_count; }
+  std::uint64_t Children(Node parent, Symbol min, Symbol max,
+                         std::vector<Choice>* out) const;
 
  private:
-  const unsigned char* data;
-  off_t length;
-#ifdef _WIN32
-  void* mapping_handle;
-#endif
-  int64_t total;
-  void fail(off_t n, const char* message) const;
+  std::vector<std::uint8_t> data_;
+  IndexMetadata metadata_;
+  IndexFooter footer_;
+  std::vector<Symbol> alphabet_;
+  std::set<Node> node_offsets_;
 };
 
 class IndexWalker {
  public:
-  const char* text;
-  int64_t same, count;
+  const SymbolString* chain = nullptr;
+  std::size_t same = 0;
+  std::uint64_t count = 0;
 
-  IndexWalker(const IndexReader*, IndexReader::Node node, int64_t count);
-  void next();
+  IndexWalker(const IndexReader* reader, IndexReader::Node node,
+              std::uint64_t count);
+  void Next();
 
  private:
-  const IndexReader* const reader;
-  char* buf;
+  struct State {
+    std::vector<IndexReader::Choice> choices;
+    std::size_t next = 0;
+  };
 
-  struct State { std::vector<IndexReader::Choice> choices; size_t next; };
-  std::vector<State> stack;
-  size_t stack_size, buf_alloc;
+  const IndexReader* reader_;
+  SymbolString buffer_;
+  std::vector<State> stack_;
+  std::size_t stack_size_ = 0;
 };
+
+#endif  // NUTRIMATIC_INDEX_H_

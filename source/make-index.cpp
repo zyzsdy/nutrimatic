@@ -1,101 +1,98 @@
+#include "index-builder.h"
 #include "index.h"
+#include "unicode.h"
+#include "cli-utf8.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <iostream>
 #include <string>
 #include <vector>
 
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+namespace {
 
-using namespace std;
+constexpr std::size_t kChainsPerFile = 1000000;
 
-static const size_t CHAINS_PER_FILE = 1000000;
-static const size_t MAX_LINE_LENGTH = 65536;
-static const size_t HISTORY_WINDOW_SIZE = 40;
-static const size_t TITLE_MULTIPLIER = 10;
-
-static void do_buffer(char *text, int *len, std::vector<string>* out) {
-  out->push_back(std::string(text, *len));
-  char* space = (char*) memchr(text, ' ', *len);
-  if (space == NULL) space = text + *len - 1;
-  *len -= space + 1 - text;
-  memmove(text, space + 1, *len);
+void AddLine(const std::string& line, std::size_t multiplier,
+             std::vector<SymbolString>* chains,
+             std::uint64_t* invalid_utf8_sequences) {
+  const NormalizeResult normalized = NormalizeCorpusText(line);
+  *invalid_utf8_sequences += normalized.invalid_utf8_sequences;
+  const std::vector<SymbolString> line_chains = GenerateIndexChains(normalized.symbols);
+  for (std::size_t copy = 0; copy < multiplier; ++copy)
+    chains->insert(chains->end(), line_chains.begin(), line_chains.end());
 }
 
-static void do_line(char const* line, std::vector<string>* out) {
-  char buf[HISTORY_WINDOW_SIZE];
-  int buflen = 0;
+void WriteIndex(const std::string& prefix, int number,
+                std::vector<SymbolString>* chains) {
+  char suffix[32];
+  std::snprintf(suffix, sizeof(suffix), ".%05d.index", number);
+  const std::string filename = prefix + suffix;
+  FILE* file = OpenFileUtf8(filename, "wb");
+  if (file == nullptr)
+    throw std::runtime_error("cannot open output index \"" + filename + "\"");
 
-  for (; *line != '\0'; ++line) {
-    if (buflen == sizeof(buf)) do_buffer(buf, &buflen, out);
-
-    if (isalnum(*line)) {
-      buf[buflen++] = tolower(*line);
-    } else if (*line != '\'' && buflen > 0 && buf[buflen - 1] != ' ') {
-      buf[buflen++] = ' ';
-    }
+  IndexMetadata metadata;
+  metadata.unicode_version = UnicodeVersionArray();
+  IndexWriter writer(file, metadata);
+  std::sort(chains->begin(), chains->end());
+  SymbolString previous;
+  for (const SymbolString& chain : *chains) {
+    std::size_t same = 0;
+    while (same < previous.size() && same < chain.size() &&
+           previous[same] == chain[same]) ++same;
+    writer.Next(&chain, same, 1);
+    previous = chain;
   }
-
-  while (buflen > 0) do_buffer(buf, &buflen, out);
-}
-
-static void write_index(char const* prefix, int num,
-                        std::vector<string>* chains) {
-  size_t buf_len = strlen(prefix) + 32;
-  char filename[buf_len];
-  snprintf(filename, buf_len, "%s.%05d.index", prefix, num);
-  FILE *fp = fopen(filename, "wb");
-  if (fp == NULL) {
-    fprintf(stderr, "error: can't open \"%s\"\n", filename);
-    exit(1);
-  }
-
-  IndexWriter writer(fp);
-  sort(chains->begin(), chains->end());
-  for (size_t i = 0; i < chains->size(); ++i) {
-    int same = 0;
-    if (i > 0) {
-      int len = min((*chains)[i - 1].size(), (*chains)[i].size());
-      while (same < len && (*chains)[i - 1][same] == (*chains)[i][same]) ++same;
-    }
-    writer.next((*chains)[i].c_str(), same, 1);
-  }
-
-  writer.next(NULL, 0, 0);
+  writer.Finish();
+  std::fclose(file);
   chains->clear();
-  fclose(fp);
 }
 
-int main(int argc, char* argv[]) {
+}  // namespace
+
+int main(int argc, char** argv) {
+  Utf8CommandLine command_line(argc, argv);
+  argc = command_line.argc();
+  argv = command_line.argv();
+  ConfigureBinaryStandardStreams();
   if (argc != 2 || argv[1][0] == '-') {
-    fprintf(stderr, "usage: %s outfileprefix < textfile.txt\n", argv[0]);
+    std::fprintf(stderr, "usage: %s outfileprefix < textfile.txt\n", argv[0]);
     return 2;
   }
 
-  int filecount = 0;
-  char buf[MAX_LINE_LENGTH];
-  std::vector<string> chains;
-  bool next_line_is_title = false;
-  while (fgets(buf, sizeof(buf), stdin)) {
-    // Handle both output from remove-markup (with BEGIN ARTICLE: and
-    // END ARTICLE: lines) and WikiExtractor.py (with <doc ...> and </doc>).
-    if (!strncmp(buf, "BEGIN ARTICLE:", 14)) {
-      for (size_t i = 0; i < TITLE_MULTIPLIER; ++i) do_line(buf + 14, &chains);
-    } else if (!strncmp(buf, "<doc ", 5)) {
-      next_line_is_title = true;
-    } else if (next_line_is_title) {
-      for (size_t i = 0; i < TITLE_MULTIPLIER; ++i) do_line(buf, &chains);
-      next_line_is_title = false;
-    } else if (strncmp(buf, "END ARTICLE:", 12) && strncmp(buf, "</doc>", 6)) {
-      do_line(buf, &chains);
+  try {
+    int file_count = 0;
+    std::vector<SymbolString> chains;
+    std::string line;
+    bool next_line_is_title = false;
+    std::uint64_t invalid_utf8_sequences = 0;
+    while (std::getline(std::cin, line)) {
+      if (line.rfind("BEGIN ARTICLE:", 0) == 0) {
+        AddLine(line.substr(14), 10, &chains, &invalid_utf8_sequences);
+      } else if (line.rfind("<doc ", 0) == 0) {
+        next_line_is_title = true;
+      } else if (next_line_is_title) {
+        AddLine(line, 10, &chains, &invalid_utf8_sequences);
+        next_line_is_title = false;
+      } else if (line.rfind("END ARTICLE:", 0) != 0 &&
+                 line.rfind("</doc>", 0) != 0) {
+        AddLine(line, 1, &chains, &invalid_utf8_sequences);
+      }
+
+      if (chains.size() >= kChainsPerFile)
+        WriteIndex(argv[1], file_count++, &chains);
     }
-
-    if (chains.size() >= CHAINS_PER_FILE)
-      write_index(argv[1], filecount++, &chains);
+    if (!chains.empty()) WriteIndex(argv[1], file_count++, &chains);
+    if (invalid_utf8_sequences != 0) {
+      std::fprintf(stderr,
+                   "warning: replaced %llu invalid UTF-8 sequence(s) with boundaries\n",
+                   static_cast<unsigned long long>(invalid_utf8_sequences));
+    }
+    return 0;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "error: %s\n", error.what());
+    return 1;
   }
-
-  if (chains.size() > 0) write_index(argv[1], filecount++, &chains);
-  return 0;
 }

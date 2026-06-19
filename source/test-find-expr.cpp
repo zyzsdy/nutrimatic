@@ -1,10 +1,13 @@
 #include "index.h"
+#include "index-builder.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <algorithm>
 #include <fstream>
 #include <string>
+#include <vector>
 
 static void Fail(const char* message) {
   fprintf(stderr, "FAIL: %s\n", message);
@@ -36,9 +39,23 @@ int main() {
   FILE* fp = fopen("test-find-expr.index", "wb");
   if (fp == NULL) Fail("can't create test index");
 
-  IndexWriter writer(fp);
-  writer.next("a ", 0, 1);
-  writer.next(NULL, 0, 0);
+  IndexMetadata metadata;
+  metadata.unicode_version = UnicodeVersionArray();
+  IndexWriter writer(fp, metadata);
+  std::vector<SymbolString> chains =
+      GenerateIndexChains(NormalizeCorpusText("a ").symbols);
+  std::sort(chains.begin(), chains.end());
+  SymbolString previous;
+  for (const SymbolString& chain : chains) {
+    std::size_t same = 0;
+    while (same < previous.size() && same < chain.size() &&
+           previous[same] == chain[same]) {
+      ++same;
+    }
+    writer.Next(&chain, same, 1);
+    previous = chain;
+  }
+  writer.Finish();
   fclose(fp);
 
   int status = system(

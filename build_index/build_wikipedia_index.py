@@ -22,9 +22,19 @@ DEFAULT_DUMP_URL = (
 
 
 @dataclass(frozen=True)
+class DumpConfig:
+    name: str
+    url: str
+    dump_path: Path
+    text_dir: Path
+    index_prefix: Path
+
+
+@dataclass(frozen=True)
 class BuildConfig:
     data_dir: Path
     repo_root: Path | None = None
+    dumps: tuple[DumpConfig, ...] = ()
     dump_url: str = DEFAULT_DUMP_URL
     dump_path: Path | None = None
     text_dir: Path | None = None
@@ -43,16 +53,44 @@ class BuildConfig:
 
         data_dir = self.data_dir.resolve()
         object.__setattr__(self, "data_dir", data_dir)
+        if self.dumps:
+            resolved_dumps = tuple(
+                DumpConfig(
+                    name=dump.name,
+                    url=dump.url,
+                    dump_path=(dump.dump_path if dump.dump_path.is_absolute() else data_dir / dump.dump_path).resolve(),
+                    text_dir=(dump.text_dir if dump.text_dir.is_absolute() else data_dir / dump.text_dir).resolve(),
+                    index_prefix=(dump.index_prefix if dump.index_prefix.is_absolute() else data_dir / dump.index_prefix).resolve(),
+                )
+                for dump in self.dumps
+            )
+        else:
+            resolved_dumps = (
+                DumpConfig(
+                    name="enwiki",
+                    url=self.dump_url,
+                    dump_path=(self.dump_path or data_dir / "enwiki-latest-pages-articles.xml.bz2").resolve(),
+                    text_dir=(self.text_dir or data_dir / "text").resolve(),
+                    index_prefix=(self.index_prefix or data_dir / "wikipedia").resolve(),
+                ),
+            )
+        if not resolved_dumps:
+            raise ValueError("BuildConfig.dumps must not be empty")
+        if len({dump.name for dump in resolved_dumps}) != len(resolved_dumps):
+            raise ValueError("dump names must be unique")
+        object.__setattr__(self, "dumps", resolved_dumps)
+        primary = resolved_dumps[0]
+        object.__setattr__(self, "dump_url", primary.url)
         object.__setattr__(
             self,
             "dump_path",
-            (self.dump_path or data_dir / "enwiki-latest-pages-articles.xml.bz2").resolve(),
+            primary.dump_path,
         )
-        object.__setattr__(self, "text_dir", (self.text_dir or data_dir / "text").resolve())
+        object.__setattr__(self, "text_dir", primary.text_dir)
         object.__setattr__(
             self,
             "index_prefix",
-            (self.index_prefix or data_dir / "wikipedia").resolve(),
+            primary.index_prefix,
         )
         object.__setattr__(
             self,
@@ -126,35 +164,38 @@ def env_with_vendored_wikiextractor(repo_root: Path) -> dict[str, str]:
     return env
 
 
-def download_dump(config: BuildConfig, *, dry_run: bool) -> None:
-    assert config.dump_path is not None
+def download_dump(
+    config: BuildConfig, dump: DumpConfig | None = None, *, dry_run: bool
+) -> None:
+    dump = dump or config.dumps[0]
     config.data_dir.mkdir(parents=True, exist_ok=True)
-    if config.dump_path.exists():
-        print(f"Dump already exists, skipping download: {config.dump_path}", flush=True)
+    if dump.dump_path.exists():
+        print(f"Dump already exists, skipping download: {dump.dump_path}", flush=True)
         return
-    print(f"Downloading {config.dump_url} -> {config.dump_path}", flush=True)
+    print(f"Downloading {dump.url} -> {dump.dump_path}", flush=True)
     if dry_run:
         return
-    with urllib.request.urlopen(config.dump_url) as response:
-        with config.dump_path.open("wb") as output:
+    with urllib.request.urlopen(dump.url) as response:
+        with dump.dump_path.open("wb") as output:
             shutil.copyfileobj(response, output, length=1024 * 1024)
 
 
-def extract_text(config: BuildConfig, *, dry_run: bool) -> None:
-    assert config.dump_path is not None
-    assert config.text_dir is not None
-    if not config.dump_path.exists() and not dry_run:
-        raise FileNotFoundError(config.dump_path)
-    if config.text_dir.exists() and any(config.text_dir.rglob("*")):
-        print(f"Extracted text already exists, skipping extraction: {config.text_dir}", flush=True)
+def extract_text(
+    config: BuildConfig, dump: DumpConfig | None = None, *, dry_run: bool
+) -> None:
+    dump = dump or config.dumps[0]
+    if not dump.dump_path.exists() and not dry_run:
+        raise FileNotFoundError(dump.dump_path)
+    if dump.text_dir.exists() and any(dump.text_dir.rglob("*")):
+        print(f"Extracted text already exists, skipping extraction: {dump.text_dir}", flush=True)
         return
     args = [
         sys.executable,
         "-m",
         "wikiextractor.WikiExtractor",
         "-o",
-        config.text_dir,
-        config.dump_path,
+        dump.text_dir,
+        dump.dump_path,
     ]
     assert config.repo_root is not None
     run_command(args, dry_run=dry_run, env=env_with_vendored_wikiextractor(config.repo_root))
@@ -164,26 +205,27 @@ def iter_text_files(text_dir: Path) -> Iterable[Path]:
     return (path for path in sorted(text_dir.rglob("*")) if path.is_file())
 
 
-def build_partial_indexes(config: BuildConfig, *, dry_run: bool) -> None:
-    assert config.text_dir is not None
-    assert config.index_prefix is not None
+def build_partial_indexes(
+    config: BuildConfig, dump: DumpConfig | None = None, *, dry_run: bool
+) -> None:
+    dump = dump or config.dumps[0]
     assert config.make_index_exe is not None
     if not config.make_index_exe.exists() and not dry_run:
         raise FileNotFoundError(config.make_index_exe)
-    existing = sorted(config.data_dir.glob("wikipedia.?????.index"))
+    existing = sorted(config.data_dir.glob(f"{dump.index_prefix.name}.?????.index"))
     if existing:
         print(f"Partial indexes already exist, skipping make-index: {len(existing)} files", flush=True)
         return
-    if not config.text_dir.exists() and not dry_run:
-        raise FileNotFoundError(config.text_dir)
+    if not dump.text_dir.exists() and not dry_run:
+        raise FileNotFoundError(dump.text_dir)
     print(f"Streaming extracted text into {config.make_index_exe}", flush=True)
     if dry_run:
-        print(f"> {config.make_index_exe} {config.index_prefix} < {config.text_dir}\\**\\*", flush=True)
+        print(f"> {config.make_index_exe} {dump.index_prefix} < {dump.text_dir}\\**\\*", flush=True)
         return
 
-    files = list(iter_text_files(config.text_dir))
+    files = list(iter_text_files(dump.text_dir))
     process = subprocess.Popen(
-        [str(config.make_index_exe), str(config.index_prefix)],
+        [str(config.make_index_exe), str(dump.index_prefix)],
         stdin=subprocess.PIPE,
     )
     assert process.stdin is not None
@@ -197,7 +239,7 @@ def build_partial_indexes(config: BuildConfig, *, dry_run: bool) -> None:
         process.stdin.close()
     return_code = process.wait()
     if return_code:
-        raise subprocess.CalledProcessError(return_code, [config.make_index_exe, config.index_prefix])
+        raise subprocess.CalledProcessError(return_code, [config.make_index_exe, dump.index_prefix])
 
 
 def plan_merge_round(
@@ -244,7 +286,11 @@ def merge_indexes(config: BuildConfig, *, dry_run: bool) -> None:
         print(f"Final index already exists, skipping merge: {config.final_index}", flush=True)
         return
 
-    inputs = sorted(config.data_dir.glob("wikipedia.?????.index"))
+    inputs = sorted(
+        path
+        for dump in config.dumps
+        for path in config.data_dir.glob(f"{dump.index_prefix.name}.?????.index")
+    )
     if not inputs:
         message = f"No partial indexes found in {config.data_dir}"
         if dry_run:
@@ -295,6 +341,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, default=defaults.data_dir)
     parser.add_argument("--dump-url", default=DEFAULT_DUMP_URL)
     parser.add_argument("--dump-path", type=Path)
+    parser.add_argument(
+        "--dump",
+        action="append",
+        default=[],
+        metavar="NAME=URL",
+        help="add a named Wikipedia dump; may be repeated",
+    )
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -310,20 +363,41 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     check_native_windows()
+    dump_configs: tuple[DumpConfig, ...] = ()
+    if args.dump:
+        parsed_dumps = []
+        for value in args.dump:
+            name, separator, url = value.partition("=")
+            if not separator or not name or not url:
+                raise ValueError("--dump must use NAME=URL syntax")
+            parsed_dumps.append(
+                DumpConfig(
+                    name=name,
+                    url=url,
+                    dump_path=Path(f"{name}-latest-pages-articles.xml.bz2"),
+                    text_dir=Path(f"{name}-text"),
+                    index_prefix=Path(name),
+                )
+            )
+        dump_configs = tuple(parsed_dumps)
     config = BuildConfig(
         repo_root=Path(__file__).resolve().parents[1],
         data_dir=args.data_dir,
+        dumps=dump_configs,
         dump_url=args.dump_url,
         dump_path=args.dump_path,
         batch_size=args.batch_size,
     )
 
     if "download" in args.steps:
-        download_dump(config, dry_run=args.dry_run)
+        for dump in config.dumps:
+            download_dump(config, dump, dry_run=args.dry_run)
     if "extract" in args.steps:
-        extract_text(config, dry_run=args.dry_run)
+        for dump in config.dumps:
+            extract_text(config, dump, dry_run=args.dry_run)
     if "index" in args.steps:
-        build_partial_indexes(config, dry_run=args.dry_run)
+        for dump in config.dumps:
+            build_partial_indexes(config, dump, dry_run=args.dry_run)
     if "merge" in args.steps:
         merge_indexes(config, dry_run=args.dry_run)
     if "test" in args.steps:

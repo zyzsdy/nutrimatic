@@ -1,4 +1,5 @@
 <html><head>
+  <meta charset="utf-8">
   <title>Nutrimatic Usage Guide</title></head>
   <link rel="icon" type="image/vnd.microsoft.icon" href="/favicon.ico">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -115,6 +116,15 @@ phrases</a>" below for details.</p>
 <p>Because only letters and lowercase letters show up in the text, uppercase
 letters and punctuation symbols are available to mean other things in queries.
 Nutrimatic adds several such extensions:</p>
+
+<p>The Unicode index matches normalized Unicode code points. English spaces
+remain visible and quotation marks control whether they may be inserted.
+Invisible CJK position boundaries may always be crossed, including inside
+quotes. The <tt>.</tt>, <tt>_</tt>, and quantifiers count Unicode code points;
+<tt>A</tt>, <tt>C</tt>, <tt>V</tt>, and <tt>#</tt> remain ASCII-only.
+The initial searchable scripts are Latin, Han, Hiragana, Katakana, and Hangul.
+Non-ASCII character ranges such as <tt>[一-龥]</tt> are not supported; list
+their members explicitly instead.</p>
 
 <h4><a name="syntax_chars">Character Classes</a></h4>
 

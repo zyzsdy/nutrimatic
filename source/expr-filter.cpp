@@ -1,41 +1,55 @@
-#include "index.h"
-#include "search.h"
 #include "expr.h"
+
+#include <algorithm>
+#include <cassert>
+#include <cstdlib>
 
 #include "fst/vector-fst.h"
 
-#include <assert.h>
-
-using namespace fst;
-
-ExprFilter::ExprFilter(StdFst const& raw) {
-  StdVectorFst optimized;
+ExprFilter::ExprFilter(const fst::StdFst& raw) {
+  fst::StdVectorFst optimized;
   OptimizeExpr(raw, &optimized);
-  if (getenv("DEBUG_FST") != NULL) {
-    optimized.Write(getenv("DEBUG_FST"));
-  }
+  if (std::getenv("DEBUG_FST") != nullptr)
+    optimized.Write(std::getenv("DEBUG_FST"));
 
   if (optimized.NumStates() == 0) {
-    accepting.resize(1, false);
-    for (int c = 0; c <= UCHAR_MAX; ++c) next[c].resize(1, -1);
-    start_state = 0;
+    accepting_.resize(1, false);
+    transitions_.resize(1);
     return;
   }
-
-  accepting.resize(optimized.NumStates());
-  for (int c = 0; c <= UCHAR_MAX; ++c) next[c].resize(optimized.NumStates(), -1);
-  start_state = optimized.Start();
-  assert(start_state >= 0 && start_state < accepting.size());
-
-  for (StateIterator<StdFst> si(optimized); !si.Done(); si.Next()) {
-    State s = si.Value();
-    assert(s >= 0 && s < accepting.size());
-    accepting[s] = (optimized.Final(s) != StdArc::Weight::Zero());
-    for (ArcIterator<StdFst> ai(optimized, s); !ai.Done(); ai.Next()) {
-      StdArc const& arc = ai.Value();
-      assert(arc.ilabel > 0 && arc.ilabel <= UCHAR_MAX);
-      assert(arc.nextstate >= 0 && arc.nextstate < next[arc.ilabel].size());
-      next[arc.ilabel][s] = arc.nextstate;
+  accepting_.resize(optimized.NumStates());
+  transitions_.resize(optimized.NumStates());
+  start_state_ = optimized.Start();
+  for (fst::StateIterator<fst::StdFst> states(optimized); !states.Done();
+       states.Next()) {
+    const State state = states.Value();
+    accepting_[state] = optimized.Final(state) != fst::StdArc::Weight::Zero();
+    for (fst::ArcIterator<fst::StdFst> arcs(optimized, state); !arcs.Done();
+         arcs.Next()) {
+      const fst::StdArc& arc = arcs.Value();
+      if (arc.ilabel <= 0 || arc.ilabel > kPositionBreak)
+        throw std::runtime_error("expression FST contains an invalid symbol");
+      transitions_[state].push_back(
+          {static_cast<Symbol>(arc.ilabel), arc.nextstate});
     }
+    std::sort(transitions_[state].begin(), transitions_[state].end());
   }
+}
+
+bool ExprFilter::is_accepting(State state) const {
+  return state >= 0 && static_cast<std::size_t>(state) < accepting_.size() &&
+         accepting_[state];
+}
+
+bool ExprFilter::has_transition(State from, Symbol symbol, State* to) const {
+  if (from < 0 || static_cast<std::size_t>(from) >= transitions_.size()) return false;
+  const auto& transitions = transitions_[from];
+  const auto found = std::lower_bound(
+      transitions.begin(), transitions.end(), symbol,
+      [](const std::pair<Symbol, State>& transition, Symbol value) {
+        return transition.first < value;
+      });
+  if (found == transitions.end() || found->first != symbol) return false;
+  *to = found->second;
+  return true;
 }

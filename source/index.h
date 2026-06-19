@@ -51,6 +51,9 @@ class IndexReader {
   };
 
   explicit IndexReader(FILE* file);
+  ~IndexReader();
+  IndexReader(const IndexReader&) = delete;
+  IndexReader& operator=(const IndexReader&) = delete;
   const IndexMetadata& metadata() const { return metadata_; }
   const std::vector<Symbol>& alphabet() const { return alphabet_; }
   Node root() const { return footer_.root_offset; }
@@ -59,11 +62,16 @@ class IndexReader {
                          std::vector<Choice>* out) const;
 
  private:
-  std::vector<std::uint8_t> data_;
+  void Unmap() noexcept;
+
+  const std::uint8_t* data_ = nullptr;
+  std::size_t data_size_ = 0;
+#ifdef _WIN32
+  void* mapping_handle_ = nullptr;
+#endif
   IndexMetadata metadata_;
   IndexFooter footer_;
   std::vector<Symbol> alphabet_;
-  std::set<Node> node_offsets_;
 };
 
 class IndexWalker {

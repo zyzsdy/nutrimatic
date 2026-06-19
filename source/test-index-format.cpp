@@ -29,6 +29,24 @@ void ExpectFormatError(Fn fn) {
   Expect(false, "expected IndexFormatError");
 }
 
+void WriteFile(const char* filename, const std::vector<std::uint8_t>& bytes) {
+  FILE* fp = std::fopen(filename, "wb");
+  Expect(fp != nullptr, "open test index for writing");
+  Expect(std::fwrite(bytes.data(), 1, bytes.size(), fp) == bytes.size(),
+         "write test index");
+  std::fclose(fp);
+}
+
+void ExpectReaderFormatError(const char* filename,
+                             const std::vector<std::uint8_t>& bytes) {
+  WriteFile(filename, bytes);
+  FILE* fp = std::fopen(filename, "rb");
+  Expect(fp != nullptr, "open corrupt test index");
+  ExpectFormatError([&] { IndexReader reader(fp); });
+  std::fclose(fp);
+  std::remove(filename);
+}
+
 void TestIntegers() {
   std::vector<std::uint8_t> bytes;
   WriteU16(&bytes, 0xABCD);
@@ -131,6 +149,119 @@ void TestIndexRoundTrip() {
   std::remove(filename);
 }
 
+void TestNonRootCorruptionIsValidatedOnAccess() {
+  const char* filename = "test-index-lazy-validation.index";
+  IndexMetadata metadata;
+  metadata.unicode_version = UnicodeVersionArray();
+
+  std::vector<std::uint8_t> bytes;
+  EncodeHeader(metadata, &bytes);
+  const std::uint64_t child_offset = bytes.size();
+  std::vector<std::uint8_t> child =
+      EncodeNode(child_offset, {{kEnd, 1, 0}});
+  child[0] = 2;  // The child aggregate no longer matches its only edge.
+  bytes.insert(bytes.end(), child.begin(), child.end());
+
+  const std::uint64_t root_offset = bytes.size();
+  const std::vector<std::uint8_t> root =
+      EncodeNode(root_offset, {{EncodeScalar(U'a'), 1, child_offset}});
+  bytes.insert(bytes.end(), root.begin(), root.end());
+  const std::uint64_t alphabet_offset = bytes.size();
+  const std::vector<std::uint8_t> alphabet =
+      EncodeAlphabet({EncodeScalar(U'a')});
+  bytes.insert(bytes.end(), alphabet.begin(), alphabet.end());
+
+  IndexFooter footer;
+  footer.root_offset = root_offset;
+  footer.root_count = 1;
+  footer.alphabet_offset = alphabet_offset;
+  footer.alphabet_count = 1;
+  footer.file_length = bytes.size() + kIndexFooterSize;
+  EncodeFooter(footer, &bytes);
+
+  FILE* fp = std::fopen(filename, "wb");
+  Expect(fp != nullptr, "open lazy validation output");
+  Expect(std::fwrite(bytes.data(), 1, bytes.size(), fp) == bytes.size(),
+         "write lazy validation index");
+  std::fclose(fp);
+
+  fp = std::fopen(filename, "rb");
+  Expect(fp != nullptr, "open lazy validation input");
+  IndexReader reader(fp);
+  std::vector<IndexReader::Choice> root_children;
+  reader.Children(reader.root(), kEpsilon, kPositionBreak, &root_children);
+  Expect(root_children.size() == 1, "read valid root before corrupt child");
+  ExpectFormatError([&] {
+    std::vector<IndexReader::Choice> child_children;
+    reader.Children(root_children[0].next, kEpsilon, kPositionBreak,
+                    &child_children);
+  });
+  std::fclose(fp);
+  std::remove(filename);
+}
+
+void TestReaderRejectsEagerCorruption() {
+  IndexMetadata metadata;
+  metadata.unicode_version = UnicodeVersionArray();
+  std::vector<std::uint8_t> valid;
+  EncodeHeader(metadata, &valid);
+  const std::uint64_t child_offset = valid.size();
+  const std::vector<std::uint8_t> child =
+      EncodeNode(child_offset, {{kEnd, 1, 0}});
+  valid.insert(valid.end(), child.begin(), child.end());
+  const std::uint64_t root_offset = valid.size();
+  const std::vector<std::uint8_t> root =
+      EncodeNode(root_offset, {{EncodeScalar(U'a'), 1, child_offset}});
+  valid.insert(valid.end(), root.begin(), root.end());
+  const std::uint64_t alphabet_offset = valid.size();
+  const std::vector<std::uint8_t> alphabet =
+      EncodeAlphabet({EncodeScalar(U'a')});
+  valid.insert(valid.end(), alphabet.begin(), alphabet.end());
+  IndexFooter footer;
+  footer.root_offset = root_offset;
+  footer.root_count = 1;
+  footer.alphabet_offset = alphabet_offset;
+  footer.alphabet_count = 1;
+  footer.file_length = valid.size() + kIndexFooterSize;
+  EncodeFooter(footer, &valid);
+
+  std::vector<std::uint8_t> corrupt = valid;
+  corrupt[0] ^= 0xFF;
+  ExpectReaderFormatError("test-index-bad-header.index", corrupt);
+
+  corrupt = valid;
+  corrupt[valid.size() - kIndexFooterSize] ^= 0xFF;
+  ExpectReaderFormatError("test-index-bad-footer.index", corrupt);
+
+  corrupt = valid;
+  corrupt[root_offset] = 2;
+  ExpectReaderFormatError("test-index-bad-root.index", corrupt);
+
+  corrupt = valid;
+  corrupt[alphabet_offset] = 0;
+  ExpectReaderFormatError("test-index-bad-alphabet.index", corrupt);
+
+  corrupt = valid;
+  corrupt.resize(kIndexHeaderSize + kIndexFooterSize - 1);
+  ExpectReaderFormatError("test-index-truncated.index", corrupt);
+
+  corrupt = valid;
+  corrupt[root_offset + root.size() - 1] = 0x7F;
+  ExpectReaderFormatError("test-index-bad-reference.index", corrupt);
+
+  const char* filename = "test-index-bad-request.index";
+  WriteFile(filename, valid);
+  FILE* fp = std::fopen(filename, "rb");
+  Expect(fp != nullptr, "open valid test index");
+  IndexReader reader(fp);
+  ExpectFormatError([&] {
+    std::vector<IndexReader::Choice> children;
+    reader.Children(UINT64_MAX, kEpsilon, kPositionBreak, &children);
+  });
+  std::fclose(fp);
+  std::remove(filename);
+}
+
 void TestMergeTerminatesFrequencyBoundaryPrefixes() {
   const char* input_filename = "test-merge-prefix-input.index";
   const char* output_filename = "test-merge-prefix-output.index";
@@ -178,6 +309,8 @@ int main() {
   TestIntegers();
   TestHeaderFooter();
   TestIndexRoundTrip();
+  TestNonRootCorruptionIsValidatedOnAccess();
+  TestReaderRejectsEagerCorruption();
   TestMergeTerminatesFrequencyBoundaryPrefixes();
   return 0;
 }

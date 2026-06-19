@@ -131,11 +131,53 @@ void TestIndexRoundTrip() {
   std::remove(filename);
 }
 
+void TestMergeTerminatesFrequencyBoundaryPrefixes() {
+  const char* input_filename = "test-merge-prefix-input.index";
+  const char* output_filename = "test-merge-prefix-output.index";
+  std::remove(output_filename);
+
+  FILE* fp = std::fopen(input_filename, "wb");
+  Expect(fp != nullptr, "open merge prefix input");
+  IndexMetadata metadata;
+  metadata.unicode_version = UnicodeVersionArray();
+  IndexWriter writer(fp, metadata);
+  const SymbolString first = {
+      EncodeScalar(U'a'), EncodeScalar(U' '), EncodeScalar(U'b'), kEnd};
+  const SymbolString second = {
+      EncodeScalar(U'a'), EncodeScalar(U' '), EncodeScalar(U'c'), kEnd};
+  writer.Next(&first, 0, 1);
+  writer.Next(&second, 2, 1);
+  writer.Finish();
+  std::fclose(fp);
+
+  const int result = std::system(
+      "build\\merge-indexes.exe 2 test-merge-prefix-input.index "
+      "test-merge-prefix-output.index >NUL 2>&1");
+  Expect(result == 0, "merge frequency boundary prefix");
+
+  fp = std::fopen(output_filename, "rb");
+  Expect(fp != nullptr, "open merged prefix output");
+  IndexReader reader(fp);
+  IndexWalker walker(&reader, reader.root(), reader.count());
+  const SymbolString expected = {
+      EncodeScalar(U'a'), EncodeScalar(U' '), kEnd};
+  Expect(walker.chain != nullptr && *walker.chain == expected,
+         "merged prefix has explicit END");
+  Expect(walker.count == 2, "merged prefix frequency");
+  walker.Next();
+  Expect(walker.chain == nullptr, "only merged prefix remains");
+  std::fclose(fp);
+
+  std::remove(input_filename);
+  std::remove(output_filename);
+}
+
 }  // namespace
 
 int main() {
   TestIntegers();
   TestHeaderFooter();
   TestIndexRoundTrip();
+  TestMergeTerminatesFrequencyBoundaryPrefixes();
   return 0;
 }

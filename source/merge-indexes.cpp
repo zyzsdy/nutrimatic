@@ -48,7 +48,10 @@ class FrequencyCutoffWriter {
       output_same_ = std::min(output_same_, saved_.size());
       if (boundary.second >= cutoff_ ||
           (boundary.second > 0 && output_same_ == boundary.first)) {
-        output_->Next(&saved_, output_same_, boundary.second);
+        SymbolString output_chain = saved_;
+        if (output_chain.empty() || output_chain.back() != kEnd)
+          output_chain.push_back(kEnd);
+        output_->Next(&output_chain, output_same_, boundary.second);
         output_same_ = boundaries_.back().first;
       } else {
         if (boundary.second > UINT64_MAX - boundaries_.back().second)

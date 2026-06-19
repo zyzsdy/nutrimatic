@@ -13,9 +13,35 @@ from build_wikipedia_index import (
     count_merge_jobs,
     default_config,
     extract_text,
+    main,
     merge_indexes,
     plan_merge_round,
 )
+
+
+def test_main_uses_explicit_dump_path(tmp_path, monkeypatch):
+    dump_path = tmp_path / "zhwiki-latest-pages-articles.xml.bz2"
+    captured_configs = []
+
+    monkeypatch.setattr("build_wikipedia_index.check_native_windows", lambda: None)
+    monkeypatch.setattr(
+        "build_wikipedia_index.download_dump",
+        lambda config, *, dry_run: captured_configs.append(config),
+    )
+
+    result = main(
+        [
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--dump-path",
+            str(dump_path),
+            "--steps",
+            "download",
+        ]
+    )
+
+    assert result == 0
+    assert captured_configs[0].dump_path == dump_path
 
 
 def test_build_partial_indexes_reports_file_progress(tmp_path, monkeypatch):

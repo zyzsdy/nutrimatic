@@ -294,6 +294,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument("--data-dir", type=Path, default=defaults.data_dir)
     parser.add_argument("--dump-url", default=DEFAULT_DUMP_URL)
+    parser.add_argument("--dump-path", type=Path)
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -313,6 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         repo_root=Path(__file__).resolve().parents[1],
         data_dir=args.data_dir,
         dump_url=args.dump_url,
+        dump_path=args.dump_path,
         batch_size=args.batch_size,
     )
 
